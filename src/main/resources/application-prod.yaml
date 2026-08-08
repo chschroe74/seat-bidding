@@ -1,0 +1,7 @@
+quarkus:
+  mailer:
+    mock: false
+  log:
+    category:
+      "quarkus-mailer":
+        level: 'OFF'

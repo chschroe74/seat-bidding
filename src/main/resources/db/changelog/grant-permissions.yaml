@@ -1,0 +1,10 @@
+databaseChangeLog:
+  - changeSet:
+      id: set-permissions
+      author: chschroe
+      runAlways: true
+      changes:
+        - sqlFile:
+            path: db/sql/grant-permissions.sql
+            splitStatements: false
+            stripComments: false

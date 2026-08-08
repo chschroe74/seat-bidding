@@ -1,0 +1,42 @@
+seat-bidding:
+  scheduler:
+    enabled: false
+  authentication:
+    activation:
+      code-pepper: test-activation-pepper-not-for-production
+    password:
+      argon2-memory-kib: 1024
+      argon2-iterations: 1
+    allowed-web-origins:
+      - https://seat.test
+    rate-limit:
+      source-per-minute: 1000
+quarkus:
+  http:
+    proxy:
+      proxy-address-forwarding: true
+    auth:
+      session:
+        encryption-key: test-form-auth-encryption-key-at-least-32-characters
+      form:
+        new-cookie-interval: 1s
+  rest-csrf:
+    token-signature-key: test-csrf-signature-key-at-least-32-characters
+  mailer:
+    mock: true
+    from: seats@test.invalid
+    host: localhost
+    port: 1025
+    username: test
+    password: test
+  scheduler:
+    enabled: false
+  datasource:
+    devservices:
+      enabled: false
+  liquibase:
+    change-log: db/changelog/db.changelog-test.yaml
+  log:
+    category:
+      "quarkus-mailer":
+        level: 'OFF'

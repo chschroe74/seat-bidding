@@ -1,0 +1,28 @@
+seat-bidding:
+  authentication:
+    activation:
+      code-pepper: "oE_Q-%ag@rBPf-kNZtFqEdUa6JOo4pYW"
+    allowed-web-origins:
+      - http://localhost:8080
+
+quarkus:
+  http:
+    auth:
+      session:
+        encryption-key: "D_gmYlWh-PDWAU0WJ3fL4T^cHnQmu8-x"
+  rest-csrf:
+    token-signature-key: "KqjGxu3F3hC5SoMZfJsk7pw6@db3qub0"
+    cookie-force-secure: false
+  mailer:
+    mock: true
+    from: seats@localhost
+    host: localhost
+    port: 1025
+    username: development
+    password: development
+  log:
+    category:
+      "de.gigaworks.seatbidding":
+        level: DEBUG
+      "quarkus-mailer":
+        level: INFO

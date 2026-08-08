@@ -1,0 +1,14 @@
+{
+  "name": "Office Seat Bidding",
+  "short_name": "Office seats",
+  "start_url": "/assignments",
+  "display": "standalone",
+  "background_color": "#f7faf8",
+  "theme_color": "#315c4b",
+  "description": "Bid fairly for weekly office seats.",
+  "orientation": "portrait-primary",
+  "icons": [
+    {"src": "icons/seat.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}
+  ]
+}
+

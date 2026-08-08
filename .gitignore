@@ -1,0 +1,19 @@
+target/
+.idea/
+.vscode/
+*.iml
+.classpath
+.project
+.settings/
+
+# Flutter/Dart
+client/.dart_tool/
+client/.flutter-plugins*
+client/.packages
+client/build/
+client/coverage/
+
+# Local environment and generated assets
+.env
+src/main/resources/META-INF/resources/flutter/
+

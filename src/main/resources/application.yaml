@@ -1,0 +1,136 @@
+db:
+  host: ${DB_HOST:localhost}
+  name: ${DB_NAME:seat_bidding}
+  username: ${DB_USERNAME:seat_bidding}
+  password: ${DB_PASSWORD:seat_bidding}
+
+seat-bidding:
+  tokens-per-round: ${TOKENS_PER_ROUND:60}
+  carry-over-cap: ${CARRY_OVER_CAP:25}
+  seat-capacity: ${SEAT_CAPACITY:9}
+  scheduler:
+    cron: "${SCHEDULER_CRON:0 0 22 ? * FRI}"
+    time-zone: ${SCHEDULER_TIME_ZONE:Europe/Berlin}
+    enabled: ${SCHEDULER_ENABLED:true}
+  lock-timeout: ${LOCK_TIMEOUT:5S}
+  public-client:
+    android-download-url: ${ANDROID_DOWNLOAD_URL:}
+  authentication:
+    activation:
+      code-ttl: ${ACTIVATION_CODE_TTL:15M}
+      maximum-attempts: ${ACTIVATION_MAXIMUM_ATTEMPTS:5}
+      resend-cooldown: ${ACTIVATION_RESEND_COOLDOWN:60S}
+      token-ttl: ${ACTIVATION_TOKEN_TTL:15M}
+      code-pepper: ${ACTIVATION_CODE_PEPPER}
+    password:
+      minimum-length: ${PASSWORD_MINIMUM_LENGTH:15}
+      maximum-length: ${PASSWORD_MAXIMUM_LENGTH:128}
+      blocklist-resource: ${PASSWORD_BLOCKLIST_RESOURCE:password-blocklist.txt}
+      argon2-memory-kib: ${ARGON2_MEMORY_KIB:19456}
+      argon2-iterations: ${ARGON2_ITERATIONS:2}
+      argon2-parallelism: ${ARGON2_PARALLELISM:1}
+    rate-limit:
+      start-per-hour: ${AUTH_START_PER_HOUR:10}
+      resend-per-hour: ${AUTH_RESEND_PER_HOUR:5}
+      verify-per-fifteen-minutes: ${AUTH_VERIFY_PER_15_MINUTES:10}
+      login-per-fifteen-minutes: ${AUTH_LOGIN_PER_15_MINUTES:10}
+      source-per-minute: ${AUTH_SOURCE_PER_MINUTE:30}
+    allowed-web-origins: ${AUTH_ALLOWED_WEB_ORIGINS}
+
+quarkus:
+  jackson:
+    fail-on-unknown-properties: true
+  datasource:
+    db-kind: postgresql
+    devservices:
+      enabled: false
+    jdbc:
+      url: jdbc:postgresql://${db.host}/${db.name}
+    username: ${db.username}
+    password: ${db.password}
+  liquibase:
+    migrate-at-start: true
+    change-log: db/changelog/db.changelog-master.yaml
+    change-log-parameters:
+      applicationUser: ${db.username}
+  mailer:
+    from: ${MAIL_FROM}
+    host: ${SMTP_HOST}
+    port: ${SMTP_PORT:587}
+    username: ${SMTP_USERNAME}
+    password: ${SMTP_PASSWORD}
+    start-tls: REQUIRED
+  scheduler:
+    enabled: ${SCHEDULER_ENABLED:true}
+  otel:
+    sdk:
+      disabled: true
+  log:
+    console:
+      format: '%d{yyyy-MM-dd HH:mm:ss} %-5p [%c] (%t) %s%e%n'
+    file:
+      enabled: ${LOG_TO_FILE:false}
+      path: /logs/application.log
+      format: '%d{yyyy-MM-dd HH:mm:ss} %-5p [%c] (%t) %s%e%n'
+      rotation:
+        rotate-on-boot: false
+  smallrye-openapi:
+    info-title: Office Seat Bidding API
+    info-version: 1.0.0
+  container-image:
+    registry: ghcr.io
+    group: chschroe74
+    name: seat-bidding
+    tag: 1.0-SNAPSHOT
+    build: false
+    push: false
+  jib:
+    user: 1000
+    ports: 8080
+  http:
+    same-site-cookie:
+      "csrf-token":
+        value: strict
+        enable-client-checker: false
+    proxy:
+      proxy-address-forwarding: ${PROXY_ADDRESS_FORWARDING:false}
+    auth:
+      session:
+        encryption-key: ${AUTH_SESSION_ENCRYPTION_KEY}
+      form:
+        enabled: true
+        login-page: ""
+        landing-page: ""
+        error-page: ""
+        username-parameter: j_username
+        password-parameter: j_password
+        post-location: /j_security_check
+        timeout: ${AUTH_SESSION_TIMEOUT:30d}
+        new-cookie-interval: ${AUTH_SESSION_RENEWAL_INTERVAL:24h}
+        cookie-name: seat_session
+        cookie-path: /
+        http-only-cookie: true
+        cookie-same-site: strict
+        cookie-max-age: ${AUTH_SESSION_COOKIE_MAX_AGE:30d}
+      permission:
+        public:
+          paths: /api/public/*,/api/auth/csrf,/api/auth/start,/api/auth/activation/resend,/api/auth/activation/verify,/api/auth/activation/password,/q/health/*,/q/openapi,/q/swagger-ui/*
+          policy: permit
+        api:
+          paths: /api/*
+          policy: authenticated
+    limits:
+      max-body-size: 64K
+  rest-csrf:
+    enabled: true
+    create-token-path: /api/auth/csrf
+    token-header-name: X-CSRF-TOKEN
+    cookie-name: csrf-token
+    cookie-path: /
+    cookie-max-age: 2h
+    cookie-force-secure: true
+    cookie-http-only: false
+    token-size: 32
+    token-signature-key: ${CSRF_TOKEN_SIGNATURE_KEY}
+    verify-token: true
+    require-form-url-encoded: true
