@@ -7,10 +7,13 @@ import java.util.List;
 
 @ApplicationScoped
 public class SeatAssignmentRepository implements PanacheRepositoryBase<SeatAssignmentEntity, Long> {
-    
+
     public List<SeatAssignmentEntity> findForDate(long roundDateId) {
         return list("roundDate.id = ?1 order by finalRank", roundDateId);
     }
-    
-}
 
+    public List<SeatAssignmentEntity> findAssignedForRound(long roundId) {
+        return list("roundDate.round.id = ?1 and assigned = true", roundId);
+    }
+
+}

@@ -1,0 +1,169 @@
+databaseChangeLog:
+  - changeSet:
+      id: 002-global-fairness-allocation
+      author: chschroe
+      changes:
+        - addColumn:
+            tableName: seat_assignment
+            columns:
+              - column: { name: token_rank, type: integer }
+              - column: { name: resolution, type: varchar(32) }
+              - column: { name: boundary_tie_group, type: varchar(64) }
+
+        # Native SQL is intentional here: the deployed v1 data must be classified
+        # with PostgreSQL window functions before the new columns become mandatory.
+        - sql:
+            sql: |
+              WITH classified AS (
+                SELECT sa.id,
+                       dense_rank() OVER (
+                         PARTITION BY sa.round_date_id
+                         ORDER BY b.tokens DESC
+                       )::integer AS token_rank,
+                       sa.assigned,
+                       br.seat_capacity,
+                       (
+                         SELECT count(*)
+                         FROM bid higher
+                         WHERE higher.round_date_id = b.round_date_id
+                           AND higher.tokens > b.tokens
+                       ) AS higher_count,
+                       (
+                         SELECT count(*)
+                         FROM bid equal_bid
+                         WHERE equal_bid.round_date_id = b.round_date_id
+                           AND equal_bid.tokens = b.tokens
+                       ) AS equal_count
+                FROM seat_assignment sa
+                JOIN bid b ON b.id = sa.bid_id
+                JOIN round_date rd ON rd.id = sa.round_date_id
+                JOIN bidding_round br ON br.id = rd.round_id
+              )
+              UPDATE seat_assignment sa
+              SET token_rank = classified.token_rank,
+                  resolution = CASE
+                    WHEN classified.higher_count >= classified.seat_capacity THEN 'FIXED_LOSER'
+                    WHEN classified.higher_count + classified.equal_count <= classified.seat_capacity THEN 'FIXED_WINNER'
+                    WHEN classified.assigned THEN 'LEGACY_TIE_WINNER'
+                    ELSE 'LEGACY_TIE_LOSER'
+                  END
+              FROM classified
+              WHERE classified.id = sa.id
+
+        - addNotNullConstraint:
+            tableName: seat_assignment
+            columnName: token_rank
+            columnDataType: integer
+        - addNotNullConstraint:
+            tableName: seat_assignment
+            columnName: resolution
+            columnDataType: varchar(32)
+
+        # These checks deliberately use SQL because several contain PostgreSQL
+        # expressions and Liquibase Community has no portable check-constraint change.
+        - sql:
+            sql: |
+              ALTER TABLE seat_assignment
+                ADD CONSTRAINT ck_assignment_token_rank CHECK (token_rank >= 1),
+                ADD CONSTRAINT ck_assignment_resolution CHECK (resolution IN (
+                  'FIXED_WINNER', 'FIXED_LOSER',
+                  'GLOBAL_TIE_WINNER', 'GLOBAL_TIE_LOSER',
+                  'LEGACY_TIE_WINNER', 'LEGACY_TIE_LOSER'
+                )),
+                ADD CONSTRAINT ck_assignment_resolution_result CHECK (
+                  assigned = (resolution IN ('FIXED_WINNER', 'GLOBAL_TIE_WINNER', 'LEGACY_TIE_WINNER'))
+                ),
+                ADD CONSTRAINT ck_assignment_boundary_group CHECK (
+                  (boundary_tie_group IS NOT NULL) =
+                  (resolution IN ('GLOBAL_TIE_WINNER', 'GLOBAL_TIE_LOSER'))
+                ),
+                ADD CONSTRAINT ck_assignment_global_draw CHECK (
+                  resolution NOT IN ('GLOBAL_TIE_WINNER', 'GLOBAL_TIE_LOSER') OR draw_value IS NULL
+                ),
+                ADD CONSTRAINT ck_assignment_algorithm_version CHECK (btrim(algorithm_version) <> '')
+
+        - createIndex:
+            tableName: seat_assignment
+            indexName: ix_assignment_resolution
+            columns:
+              - column: { name: round_date_id }
+              - column: { name: resolution }
+        - createIndex:
+            tableName: seat_assignment
+            indexName: ix_assignment_boundary_group
+            columns:
+              - column: { name: round_date_id }
+              - column: { name: boundary_tie_group }
+
+        - createTable:
+            tableName: round_allocation_audit
+            columns:
+              - column: { name: id, type: bigint, autoIncrement: true, constraints: { primaryKey: true, primaryKeyName: pk_round_allocation_audit, nullable: false } }
+              - column: { name: round_id, type: bigint, constraints: { nullable: false } }
+              - column: { name: algorithm_version, type: varchar(32), constraints: { nullable: false } }
+              - column: { name: input_fingerprint, type: char(64), constraints: { nullable: false } }
+              - column: { name: objective_summary, type: jsonb, constraints: { nullable: false } }
+              - column: { name: selected_solution_fingerprint, type: char(64), constraints: { nullable: false } }
+              - column: { name: random_selection_value, type: varchar(255) }
+              - column: { name: created_at, type: timestamptz, defaultValueComputed: now(), constraints: { nullable: false } }
+        - addForeignKeyConstraint:
+            baseTableName: round_allocation_audit
+            baseColumnNames: round_id
+            referencedTableName: bidding_round
+            referencedColumnNames: id
+            constraintName: fk_allocation_audit_round
+        - addUniqueConstraint:
+            tableName: round_allocation_audit
+            columnNames: round_id
+            constraintName: uq_allocation_audit_round
+
+        # The fingerprint regular expressions and JSONB type check are PostgreSQL-specific.
+        - sql:
+            sql: |
+              ALTER TABLE round_allocation_audit
+                ADD CONSTRAINT ck_allocation_audit_algorithm CHECK (btrim(algorithm_version) <> ''),
+                ADD CONSTRAINT ck_allocation_audit_input_fingerprint CHECK (
+                  input_fingerprint ~ '^[0-9a-f]{64}$'
+                ),
+                ADD CONSTRAINT ck_allocation_audit_solution_fingerprint CHECK (
+                  selected_solution_fingerprint ~ '^[0-9a-f]{64}$'
+                ),
+                ADD CONSTRAINT ck_allocation_audit_objective CHECK (
+                  jsonb_typeof(objective_summary) = 'object'
+                )
+
+        - createIndex:
+            tableName: round_allocation_audit
+            indexName: ix_allocation_audit_created_at
+            columns:
+              - column: { name: created_at }
+
+      rollback:
+        - dropTable:
+            tableName: round_allocation_audit
+        - dropIndex:
+            tableName: seat_assignment
+            indexName: ix_assignment_boundary_group
+        - dropIndex:
+            tableName: seat_assignment
+            indexName: ix_assignment_resolution
+        # dropCheckConstraint is only available with Liquibase Secure, not the
+        # Liquibase Community runtime supplied by Quarkus.
+        - sql:
+            sql: |
+              ALTER TABLE seat_assignment
+                DROP CONSTRAINT ck_assignment_algorithm_version,
+                DROP CONSTRAINT ck_assignment_global_draw,
+                DROP CONSTRAINT ck_assignment_boundary_group,
+                DROP CONSTRAINT ck_assignment_resolution_result,
+                DROP CONSTRAINT ck_assignment_resolution,
+                DROP CONSTRAINT ck_assignment_token_rank
+        - dropColumn:
+            tableName: seat_assignment
+            columnName: boundary_tie_group
+        - dropColumn:
+            tableName: seat_assignment
+            columnName: resolution
+        - dropColumn:
+            tableName: seat_assignment
+            columnName: token_rank

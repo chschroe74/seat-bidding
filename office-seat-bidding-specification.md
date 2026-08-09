@@ -1,14 +1,14 @@
 # Office Seat Bidding Application — Implementation Specification
 
-**Status:** Approved implementation specification  
-**Target release:** Version 1  
-**Primary client:** Flutter Progressive Web App (PWA)  
-**Optional client:** Native Flutter Android application  
+**Status:** Approved implementation specification
+**Target release:** Version 1
+**Primary client:** Flutter Progressive Web App (PWA)
+**Optional client:** Native Flutter Android application
 **Backend:** Java 25, Quarkus, PostgreSQL, Hibernate ORM with Panache, Liquibase, application-managed authentication, Quarkus Scheduler, Jib
 
 ## 1. Purpose
 
-The application distributes a limited number of office seats fairly among employees. Employees receive tokens for each bidding round and privately bid for individual weekdays. At the configured cutoff, the backend ranks bids per day, resolves only capacity-boundary ties randomly, publishes assignments, deducts only successful bids, and opens the next round.
+The application distributes a limited number of office seats fairly among employees. Employees receive tokens for each bidding round and privately bid for individual weekdays. At the configured cutoff, the backend ranks bids per target date, resolves all capacity-boundary ties globally across the round using fairness-aware allocation, uses randomness only to choose among equally optimal global solutions, publishes assignments, deducts only successful bids, and opens the next round.
 
 This document is the authoritative version 1 implementation contract. Requirements marked **MUST**, **SHOULD**, and **MAY** have their conventional meanings.
 
@@ -89,18 +89,38 @@ Every round MUST snapshot the first three business values, cutoff instant, confi
 
 ### 5.3 Allocation rules
 
-For each target date independently:
+Token ranking remains authoritative for every target date:
 
-1. Select all positive bids.
-2. Rank them by token amount descending.
-3. If the number of bidders is at most seat capacity, every bidder receives a seat and surplus seats remain unassigned.
-4. If a group tied at the same amount lies entirely above or below the capacity boundary, no random selection is needed.
-5. If a tie crosses the capacity boundary, select only the required number uniformly at random from that tied group.
-6. Persist the final rank, tie group information, selection result, and a reproducibility/audit value (for example a securely generated random draw value or seed plus deterministic algorithm version). Results MUST never be redrawn when read.
-7. A successful bidder spends the full bid amount.
-8. An unsuccessful bidder spends no tokens for that bid; its full amount remains part of the employee's balance before the carry-over cap is applied.
+1. Select all positive bids and group them by token amount descending.
+2. If the number of bidders is at most seat capacity, every bidder receives a seat and surplus seats remain unassigned.
+3. A token group lying entirely above the capacity boundary consists of fixed winners. A token group lying entirely below it consists of fixed losers.
+4. When an exact-token group crosses the capacity boundary, that group is the date's **boundary tie** and the remaining capacity is its unresolved seat count. Only employees in that boundary tie are eligible for those unresolved seats. A lower-token bidder MUST never displace a fixed winner or a boundary-tie candidate.
+5. Establish all fixed winners and fixed losers for all five target dates before resolving any boundary tie.
+6. Collect every date's boundary candidates and unresolved seats into one round-level constrained allocation problem. An employee is eligible only for unresolved slots belonging to a date on which that employee is in the boundary tie, can receive at most one seat per target date, and may receive seats on multiple different dates. Multiple unresolved seats for one date are represented as multiple slots or an equivalent capacity constraint.
+7. Solve the complete problem using the strict hierarchical objectives in section 5.3.1. No target date may be resolved independently, greedily, or in iteration order.
+8. If several complete allocations remain equivalent under every objective, select one randomly as specified in section 5.3.2.
+9. Persist one final result for every positive bid, the deterministic classification and boundary membership, the chosen global outcome, stable display rank, and the round-level allocation audit. A completed round MUST never rerun the optimiser or random selector when read.
+10. After the final allocation has been selected and persisted, charge every successful bidder the full bid amount. An unsuccessful bidder spends no tokens for that bid; its full amount remains part of the employee's balance before the carry-over cap is applied.
 
-The ranking shown after publication places successful employees above the seat boundary. Within equal-result tied groups, persisted draw order determines display order. No physical seat number is assigned in version 1.
+The conceptual hierarchy is: **token bids determine eligibility; global fairness resolves exact boundary ties; randomness resolves only equally fair global solutions.** The optimiser MUST NOT use historic assignments, prior-round tie outcomes, attendance, token balances, bid cost, carry-over, expiry, or any other token-accounting consequence as a fairness input. Fairness is scoped only to boundary-tie wins in the current bidding round.
+
+#### 5.3.1 Strict global optimisation objectives
+
+The optimiser MUST apply these objectives in strict priority order. A later objective MUST never reduce the quality achieved by an earlier one:
+
+1. **Maximise unresolved seat utilisation.** Fill the maximum possible number of unresolved seats. A seat MUST NOT remain unassigned when an eligible employee can receive it.
+2. **Maximise distinct boundary-tie winners.** Among maximum-utilisation solutions, maximise the number of different employees receiving at least one boundary-tie assignment.
+3. **Distribute additional wins by lexicographic max-min fairness.** Among solutions satisfying objectives 1 and 2, count boundary-tie wins for every employee participating in at least one unresolved tie in the round, sort those counts from lowest to highest, and lexicographically maximise the resulting vector. Thus five otherwise equivalent opportunities among three employees produce `2 / 2 / 1`, not `3 / 1 / 1`; six produce `2 / 2 / 2`.
+
+The objectives apply to the complete eligibility structure. Constrained opportunities therefore emerge from the global solution rather than a separate priority rule. For example, if Alice is eligible only for Monday while Bob and Carol are eligible for Monday, Tuesday, and Wednesday, with one unresolved seat on each day, every optimal solution assigns Monday to Alice and distributes Tuesday and Wednesday between Bob and Carol. The implementation MUST NOT approximate this by prioritising employees with fewer eligible days or by processing weekdays sequentially.
+
+#### 5.3.2 Final random selection and published order
+
+When multiple complete allocations are equivalent under all three objectives, the application MUST use the injected random-selection abstraction, backed by a cryptographically secure random generator in production, to choose among those globally optimal solutions. Randomness MUST NOT be applied to individual dates before global optimisation. Every selectable globally optimal solution MUST have equal selection probability, independent of database row, insertion, weekday, collection-iteration, or bid-loading order. The optimiser MUST canonicalise dates, employees, slots, and equivalent solutions by stable identifiers before invoking the selector.
+
+The selected solution and its round-level random audit value are persisted in the processing transaction. A retry after rollback may select a different equally optimal solution because no result committed; a `COMPLETED` round MUST never be redrawn, recalculated, or changed.
+
+Published ranking places assigned bidders above the seat boundary and unsuccessful bidders below it while keeping token ranking visible. Within the boundary token group, the persisted final ordering MUST agree with the selected global outcome and remain stable. No physical seat number is assigned in version 1.
 
 ### 5.4 Visibility
 
@@ -128,16 +148,20 @@ At each trigger, the service MUST:
 
 1. Find the due `OPEN` round and atomically mark it `PROCESSING`; do nothing if no due round exists.
 2. Lock the round for write and verify that it has not already been processed.
-3. For every target date, allocate capacity and persist all results.
-4. Persist bid-spend ledger entries for successful bids only.
-5. Calculate each participant's successful-bid spend, remaining balance, carry-over, and closing balance. Unsuccessful bids do not create a debit or refund entry because they are never spent.
-6. Mark the round `COMPLETED` with `processed_at`.
-7. Create exactly one successor `OPEN` round, snapshot current configuration, and create its five dates.
-8. Create participation records for all provisioned employees with `grant + carry-over`.
+3. Load all five target dates and all positive bids for the round.
+4. Determine deterministic token rankings for every target date and classify every bid as a fixed winner, fixed loser, or member of the exact-token boundary tie.
+5. Establish all fixed assignments and identify the boundary candidates and unresolved capacity for every affected target date.
+6. Construct the complete round-level unresolved allocation problem, solve objectives 1–3 in their strict order, and randomly choose only if multiple globally equivalent optimal solutions remain.
+7. Persist the final result for every positive bid and the round-level allocation audit. Persistence MUST be based on the selected complete solution, not partial weekday results.
+8. Persist `BID_SPEND` ledger entries for successful bids only.
+9. Calculate each participant's successful-bid spend, remaining balance, carry-over, and closing balance. Unsuccessful bids do not create a debit or refund entry because they are never spent.
+10. Mark the round `COMPLETED` with `processed_at`.
+11. Create exactly one successor `OPEN` round, snapshot current configuration, and create its five dates.
+12. Create participation records for all provisioned employees with `grant + carry-over`.
 
 These operations SHOULD commit in one transaction. If transaction size later becomes a concern, a staged design is allowed only if externally invisible, restartable, and protected by equivalent constraints.
 
-Database uniqueness constraints MUST prevent duplicate successor rounds, bids, assignments, participation records, and ledger effects. Retrying after rollback MUST produce the same business result except for a new random draw if no previous draw was committed.
+Database uniqueness constraints MUST prevent duplicate successor rounds, bids, assignments, allocation-audit records, participation records, and ledger effects. The allocation MUST NOT depend on target-date load order, weekday iteration order, employee row order, map/set iteration order, or bid insertion order. Retrying after rollback MUST produce an optimal business result but may select a different equally optimal global solution if no prior solution committed. Once a round is `COMPLETED`, retry and read paths MUST reuse its persisted results without invoking classification, optimisation, or random selection.
 
 ### 6.4 Boundary behavior
 
@@ -344,14 +368,31 @@ Unique `(round_date_id, participation_id)`. Application code verifies both refer
 | `round_date_id` | `bigint` | FK, not null |
 | `bid_id` | `bigint` | FK, not null, unique |
 | `assigned` | `boolean` | not null |
+| `token_rank` | `integer` | not null, `>= 1`; dense rank by descending token amount, so equal-token bids share a rank |
 | `final_rank` | `integer` | not null, `>= 1` |
-| `tie_group` | `varchar(64)` | nullable |
-| `draw_value` | `varchar(255)` | nullable; audit/reproduction value |
+| `resolution` | `varchar(32)` | not null; `FIXED_WINNER`, `FIXED_LOSER`, `GLOBAL_TIE_WINNER`, or `GLOBAL_TIE_LOSER` |
+| `boundary_tie_group` | `varchar(64)` | nullable; stable identifier for the date's exact-token boundary group |
+
+Persist one result for every positive bid, including unsuccessful bids. Unique `(round_date_id, final_rank)`. `boundary_tie_group` is a deterministic identifier derived from the round date and boundary token amount, is non-null exactly for global tie winners and losers, and is null for fixed outcomes. Check constraints enforce that `assigned` is true exactly for `FIXED_WINNER` and `GLOBAL_TIE_WINNER`, and that group nullability agrees with `resolution`. Index `(round_date_id, resolution)` and `(round_date_id, boundary_tie_group)`. The bid, snapshotted round capacity, `token_rank`, `resolution`, and group identifier make deterministic ranking and boundary membership auditable. `final_rank` is the immutable published ordering: assigned bidders precede the seat boundary, unsuccessful bidders follow it, and token ordering is preserved outside the resolved boundary group.
+
+### 9.8 `round_allocation_audit`
+
+| Column | Type | Rules |
+|---|---|---|
+| `id` | `bigint` | PK |
+| `round_id` | `bigint` | FK, not null, unique |
 | `algorithm_version` | `varchar(32)` | not null |
+| `input_fingerprint` | `char(64)` | not null; SHA-256 of the canonical round-level allocation input |
+| `objective_summary` | `jsonb` | not null; canonical object containing filled unresolved slots, distinct tie winners, and sorted tie-win vector |
+| `selected_solution_fingerprint` | `char(64)` | not null; SHA-256 of the canonical selected complete solution |
+| `random_selection_value` | `varchar(255)` | nullable; auditable selector value, seed, or index when equivalent optima required random choice |
+| `created_at` | `timestamptz` | not null |
 
-Persist one result for every positive bid, including unsuccessful bids. Unique `(round_date_id, final_rank)`.
+Create exactly one audit row whenever a round is processed, including a round with no boundary ties; in that case the random value is null and the fingerprints still identify the deterministic input and result. The canonical input includes the round snapshot, chronological target dates, every positive bid with stable employee/bid identifiers and token amount, deterministic classification, boundary eligibility, and unresolved capacities. The canonical selected solution includes every positive bid's final outcome. Both encodings order employees/bids by stable database identifier, are specified by `algorithm_version`, and never depend on query or collection order. `objective_summary` is diagnostic and MUST be validated against the selected assignments rather than trusted as an input to accounting.
 
-### 9.8 `token_ledger`
+The random value describes selection among complete globally optimal solutions and therefore belongs at round level, not on individual assignments. The selected outcome itself is fully materialised in `seat_assignment`; reads never reconstruct it from fingerprints or rerun the optimiser. Audit values, algorithm version, persisted assignments, immutable bids, and the round snapshot together MUST be sufficient to explain which bids were fixed, which entered boundary resolution, what objective values were achieved, and which final solution committed.
+
+### 9.9 `token_ledger`
 
 | Column | Type | Rules |
 |---|---|---|
@@ -364,20 +405,25 @@ Persist one result for every positive bid, including unsuccessful bids. Unique `
 | `idempotency_key` | `varchar(255)` | unique, not null |
 | `occurred_at` | `timestamptz` | not null |
 
-The participation row is the efficient balance snapshot; the ledger is the audit source. `BID_SPEND` is written only for a successful bid. Their totals MUST reconcile in tests. `EXPIRY` records remaining tokens removed by the carry-over cap.
+The participation row is the efficient balance snapshot; the ledger is the accounting audit source. `BID_SPEND` is written only for a bid whose persisted `seat_assignment.assigned` value is true. Allocation is final before accounting begins; the optimiser does not inspect accounting consequences. Ledger and participation totals MUST reconcile with the selected persisted solution in tests. `EXPIRY` records remaining tokens removed by the carry-over cap.
 
-### 9.9 Panache mapping
+### 9.10 Panache mapping
 
-Use explicit entity classes and repositories. Avoid exposing entities directly as REST DTOs. Mark associations lazy where practical, prevent N+1 queries with dedicated projections/fetch joins, and use enum converters for state/type values. Database constraints are mandatory even where Bean Validation duplicates them.
+Use explicit entity classes and repositories, including mappings for `SeatAssignment` resolution metadata and `RoundAllocationAudit` JSON/fingerprint fields. Avoid exposing entities directly as REST DTOs. Mark associations lazy where practical, prevent N+1 queries with dedicated projections/fetch joins, and use enum converters for state/type values. Database constraints are mandatory even where Bean Validation duplicates them. Scheduler persistence MUST insert the audit and all assignment rows in the same transaction before token accounting and round completion.
 
 ## 10. Liquibase
 
-- Use a root `db/changelog/db.changelog-master.yaml` (or XML) that includes ordered, immutable changelogs.
-- The initial changeset creates all tables, checks, foreign keys, unique constraints, partial indexes, and supporting indexes.
-- A separate seed/bootstrap mechanism MAY create the first round; do not insert environment-specific employees in production migrations.
-- Provide rollback blocks where safe; never edit an applied changeset—append a new one.
-- Quarkus runs Liquibase at application startup. Production deployment MUST ensure only one migrator runs; this follows naturally from the version 1 single instance.
-- Integration tests MUST start from an empty PostgreSQL database and apply the full changelog.
+- `db/changelog/db.changelog-master.yaml` is the sole Liquibase entry point configured in Quarkus. It is an orchestration changelog and includes, in this order:
+  1. `db/changelog/db.changelog-changes.yaml` for versioned database changes;
+  2. `db/changelog/grant-permissions.yaml` for runtime-role permissions.
+- `db/changelog/db.changelog-changes.yaml` is the second-level aggregate changelog. It includes ordered change files from `db/changelog/changes/`; version 1 currently starts with `changes/001-initial-schema.yaml`. Future versioned schema or data changes are added as new, sequentially named files and included from this aggregate rather than directly from the master changelog.
+- `001-initial-schema.yaml` is the deployed baseline and MUST NOT be edited. Every feature that requires a schema or persistent-data change MUST introduce one or more new, sequentially numbered change files under `db/changelog/changes/` and add them to `db.changelog-changes.yaml` in execution order. This applies to the current `seat_assignment` resolution metadata and `round_allocation_audit` requirements unless those structures already exist in an applied changeset. New migrations MUST preserve and upgrade existing production data safely, using staged backfills, constraints, and preconditions where required.
+- `db/changelog/grant-permissions.yaml` contains the separate `set-permissions` changeset with `runAlways: true`. It runs after all versioned changes and executes `db/sql/grant-permissions.sql` as one PostgreSQL block with statement splitting disabled and comments retained. The SQL grants `SELECT`, `INSERT`, `UPDATE`, and `DELETE` on every non-Liquibase table in the `public` schema and `USAGE` on every sequence in that schema to the role supplied through the Liquibase `${applicationUser}` change-log parameter. The migrator must have authority to issue those grants.
+- The Quarkus Liquibase configuration MUST point to `db/changelog/db.changelog-master.yaml` and provide `applicationUser` from the configured application database username. Permission application therefore covers newly created tables and sequences on every migration run without mixing permission logic into individual versioned change files.
+- A separate idempotent application bootstrap mechanism creates the first bidding round; environment-specific employees and runtime round data MUST NOT be inserted by production changelogs.
+- Provide rollback blocks where safe. Every changeset applied to any deployed environment is immutable: its identifier, author, path, and contents MUST remain stable, and subsequent changes are always appended through newly numbered change files.
+- Quarkus runs Liquibase at application startup. Production deployment MUST ensure only one migrator runs; this follows naturally from the version 1 single-instance topology.
+- Integration tests MUST both (a) start from an empty PostgreSQL database and apply the complete master changelog through both include levels and (b) exercise each new migration from the preceding deployed schema with representative existing data. Tests verify the resulting schema, preserved/backfilled data, constraints, and permission changes.
 
 ## 11. REST API
 
@@ -569,6 +615,8 @@ Semantics:
 
 `myStatus` is `NO_BID`, `ASSIGNED`, or `NOT_ASSIGNED`. Participants are already ordered by persisted final rank. Provisioned first and last names are always present.
 
+The bidding API is unaffected by global tie resolution, and optimiser internals are not exposed to end users. The published-assignment API returns only the persisted selected result. For a globally resolved equal-token boundary group, assigned members appear above the capacity boundary and unsuccessful members below it in the immutable `final_rank` order.
+
 ### 11.7 Help
 
 Help content SHOULD be bundled with Flutter for availability without another authenticated call. If centrally managed later, use `GET /api/public/help` with versioned/sanitized content.
@@ -634,7 +682,7 @@ quarkus-smallrye-health
 auth/            activation, Argon2id identity provider, form-auth integration, rate limiting
 round/           lifecycle, dates, configuration snapshot
 bidding/         bid queries, validation, replacement
-allocation/      ranking, tie draw, successful-bid charging
+allocation/      round-level ranking, global fairness optimisation, final selection, result mapping
 tokens/          participation balances and ledger
 resource/        REST resource interfaces only
 resource/impl/   REST resource implementation classes
@@ -646,7 +694,17 @@ bootstrap/       initial round and newly provisioned participant reconciliation
 
 The package named `api` MUST NOT be used. The `resource` package MUST contain only Java interfaces that define the REST contract. These interfaces carry the JAX-RS endpoint annotations and all SmallRye OpenAPI annotations, including operation descriptions, parameters, response codes, media types, security requirements, and schema references. Concrete classes belong in `resource.impl`, implement the corresponding resource interfaces, and delegate immediately to application/domain services. Endpoint and OpenAPI annotations MUST NOT be duplicated on the implementation classes. DTOs and exception mappers belong in their dedicated packages, not in `resource`.
 
-Domain services own transactions; resource implementations remain thin and contain no business logic. Inject a `Clock` and random-selection abstraction so cutoff behavior and ties are deterministic in tests.
+The `allocation/` package implements round-level allocation rather than independent per-date draws. It SHOULD separate:
+
+1. deterministic per-date token ranking and classification into fixed winners, fixed losers, boundary candidates, and unresolved capacities;
+2. construction of one immutable round-level unresolved allocation problem;
+3. optimisation of the strict utilisation, distinct-winner, and lexicographic max-min objectives;
+4. final random selection among globally equivalent optimal solutions; and
+5. conversion of the selected complete solution into assignment and audit records.
+
+The core optimiser and fairness logic MUST be pure domain logic without database access. It accepts an immutable canonical problem and returns a complete selected solution plus objective/audit data. The application may use bipartite matching, constrained search, integer optimisation, or another in-process technique appropriate to five target dates and the expected small employee population, but MUST demonstrably preserve the strict objective hierarchy. Do not add an external optimisation service, separate runtime, distributed component, or order-dependent greedy approximation.
+
+Domain services own transactions; resource implementations remain thin and contain no business logic. Inject a `Clock` and a round-level random-selection abstraction so cutoff behavior and final selection among equivalent optimal solutions are deterministic in tests. The selector receives a canonical set or canonical index range of equally optimal complete solutions; it is never called once per target date.
 
 ### 12.4 Validation
 
@@ -769,12 +827,14 @@ Help MUST explain:
 - weekly grants, balances, spending, and capped carry-over;
 - placing, changing, saving, and auto-distributing bids;
 - cutoff and privacy before cutoff;
-- allocation ranking and random boundary ties;
+- token ranking and global boundary-tie fairness, in ordinary language: when several employees make the same bid for the remaining seats, the application considers tied situations across the whole week together and tries to distribute successful tie-breaks as evenly as possible; if several equally fair allocations remain, the final choice is random;
 - successful bids being charged, unsuccessful bids remaining unspent, and the carry-over cap;
 - first-time email verification, password creation, persistent form-cookie login, inactivity expiry, and logout;
 - assignment colors, today indicator, participant order, and capacity boundary;
 - surplus/unassigned seats being outside application control;
 - Android reminders where relevant.
+
+End-user help MUST NOT use implementation terminology such as bipartite matching, optimisation objectives, or lexicographic max-min fairness, and MUST NOT imply that each day's boundary tie is drawn independently.
 
 ### 13.7 Android app download promotion
 
@@ -940,14 +1000,52 @@ All backend tests and static-analysis/build jobs MUST execute with JDK 25 so loc
 - Balance/grant/carry-over calculations, including successful-bid deductions, cap, and expiry.
 - Successful bids are charged in full; unsuccessful bids create no debit.
 - Capacity zero is rejected at startup; fewer/equal/more bidders than capacity.
-- Ties entirely above/below boundary and ties crossing it.
-- Random selector fairness contract and deterministic injected test implementation.
+- Deterministic per-date classification of fixed winners, fixed losers, exact boundary candidates, and unresolved capacities.
+- Round-level optimiser objective hierarchy, canonicalisation, and deterministic injected final selector.
 - Friday cutoff, DST transitions, and target-date calculation.
 - Zero normalization and complete bid replacement validation.
 - Email normalization and lookup behavior for known, unknown, activated, and unactivated employees.
 - Six-digit code generation including leading zeroes, keyed digest verification, expiry, failed-attempt exhaustion, resend invalidation, and cooldown calculations.
 - Password-policy length boundaries, Unicode handling, absence of composition rules, matching confirmation, and common/compromised-password blocklist.
 - Custom Argon2id identity-provider success/failure, PHC parsing, parameter-upgrade detection, and generic invalid-credential behavior.
+
+#### Allocation optimiser test matrix
+
+The pure-domain suite MUST exercise the complete immutable problem model exhaustively for small cases where practical. PostgreSQL integration tests MUST cover persistence, transactions, ledger reconciliation, and scheduler behavior. At minimum, cover:
+
+A. **Simple single-day boundary tie:** one unresolved seat and three exact boundary candidates produces exactly one winner. Every complete solution is equally fair, so the injected selector determines the selected candidate.
+
+B. **Three equivalent employees across three days:** Alice, Bob, and Carol are eligible for one unresolved seat on Monday, Tuesday, and Wednesday. The only valid win-count distribution is `1 / 1 / 1`; `2 / 1 / 0` and `3 / 0 / 0` are invalid.
+
+C. **Five unresolved seats among three equivalent employees:** when eligibility permits, the distribution is `2 / 2 / 1` in some employee order; `3 / 1 / 1` is invalid.
+
+D. **Six unresolved seats among three equivalent employees:** the distribution is `2 / 2 / 2`.
+
+E. **Employee with one opportunity:** Alice is eligible only on Monday; Bob and Carol are eligible Monday through Wednesday; one unresolved seat exists per day. Alice always receives Monday, while Bob and Carol receive Tuesday and Wednesday in either order.
+
+F. **Token ranking cannot be overridden:** include fixed higher-token winners, an exact-token boundary group, and lower-token losers. Only boundary-group members are eligible for unresolved slots; no lower bidder displaces a fixed winner or boundary candidate.
+
+G. **Multiple unresolved seats on one date:** a boundary tie crossing multiple remaining capacity positions produces exactly the required winner count, never assigns an employee twice on that date, and participates correctly in round-level fairness.
+
+H. **Different ties on different dates:** use different boundary token amounts and partially overlapping employee sets. Only each date's actual boundary candidates enter its eligibility edges; unrelated equal-token groups do not participate, and all global objectives hold.
+
+I. **More candidates than unresolved seats:** verify maximum utilisation, then maximum distinct winners, then random selection only among alternatives tied under all objectives.
+
+J. **More opportunities than employees:** after every possible employee has at least one boundary win, additional wins follow the lexicographic max-min objective.
+
+K. **Multiple equivalent global optima:** a deterministic injected selector can choose different canonical alternatives, and every selectable alternative independently satisfies objectives 1–3. Statistical testing is not a substitute for verifying the selector's unbiased contract.
+
+L. **Persistence stability:** after commit, repeated assignment queries invoke neither optimiser nor selector and always return the same selected solution and final ordering.
+
+M. **Retry semantics:** a failure rolling back the processing transaction may lead a retry to another equivalent optimum. A round already committed as `COMPLETED` is neither recalculated nor redrawn.
+
+N. **Token accounting after global allocation:** winners are charged exactly their bids; all losers, including global-tie losers, are charged zero; `successful_bid_tokens`, remaining balance, carry-over, expiry, `BID_SPEND`, participation snapshots, and ledger entries reconcile exclusively with the persisted final solution.
+
+O. **Input-order independence:** permute bids, employees, target dates, insertion order, and collection order. With the same deterministic selector output, canonicalisation produces the same selected solution.
+
+P. **No boundary ties:** deterministic ranking alone produces all results and the optimiser/random selector is not invoked unnecessarily. A round-level audit record is still persisted with a null random value.
+
+Q. **Surplus capacity:** when bidders are fewer than seats, every bidder wins, surplus seats remain unassigned, and the fairness mechanism invents neither candidates nor assignments.
 
 ### 17.2 Integration tests with PostgreSQL
 
@@ -956,8 +1054,11 @@ All backend tests and static-analysis/build jobs MUST execute with JDK 25 so loc
 - Independent employees can update concurrently.
 - Cutoff racing with bid update.
 - Scheduler rollback/retry and no duplicate assignments, bid-spend ledger entries, or successor round.
+- Global processing persists exactly one `round_allocation_audit`, the complete assignment set, canonical fingerprints, objective summary, algorithm version, and random-selection value where applicable in the same transaction.
+- Database constraints enforce coherent fixed/global-tie resolution metadata and one immutable result per positive bid.
 - Round configuration snapshots remain unchanged after runtime configuration changes.
 - Ledger reconciles with participation balances.
+- Ledger and participation values are calculated only after, and reconcile exactly with, the globally selected persisted allocation.
 - Open bids cannot be queried through published endpoints.
 - Activation start/resume/resend against a captured test mailbox; no test may contact a real SMTP server.
 - Concurrent activation/resend/password-creation requests cannot reuse a code or create conflicting password state.
@@ -992,7 +1093,7 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 1. With a starting balance of 70 and a successful 20-token bid, an employee has 50 remaining; only 20 carries out when the cap is 20.
 2. With a starting balance of 70 and an unsuccessful 20-token bid, no tokens are deducted; the remaining balance is 70 and only 20 carries out when the cap is 20.
 3. With successful bids of 20 and 8 plus an unsuccessful bid of 15, exactly 28 tokens are deducted.
-4. At capacity 2 with bids `20, 10, 10`, the 20-token bidder wins and exactly one 10-token bidder is randomly selected; only both winners are charged and the persisted result never changes.
+4. At capacity 2 with bids `20, 10, 10`, the 20-token bidder is a fixed winner and exactly one 10-token bidder wins the boundary tie. If this is the round's only unresolved tie, its two complete alternatives are globally equivalent and the final selector chooses between them. The winners are charged 20 and 10 respectively, the unsuccessful 10-token bidder is charged zero, and the persisted result never changes.
 5. At capacity 4 with three positive bidders, all three win, all three bids are charged, and one seat remains unassigned.
 6. One minute before cutoff, bids can be replaced; at/after cutoff, replacement returns `409` even before scheduler completion.
 7. Two simultaneous updates for the same employee serialize under a pessimistic lock and cannot reserve more than the starting balance.
@@ -1002,14 +1103,17 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 11. Logout removes the current client's cookie; an expired, malformed, tampered, or cookie encrypted with an obsolete key returns `401`.
 12. PWA and Android bid replacement without a valid Quarkus REST CSRF cookie/header pair is rejected; the same request succeeds with the signed matching token.
 13. Refreshing `/bids` directly serves Flutter `index.html`; `/api/unknown` remains an API `404`, not SPA HTML.
+14. Alice, Bob, and Carol are each in the boundary tie for one unresolved seat on Monday, Tuesday, and Wednesday. Processing assigns exactly one boundary-tie seat to each employee. Which employee receives which day may be random among the `1 / 1 / 1` mappings, but no employee receives two or three while another receives none.
+15. Alice is eligible only for the unresolved Monday boundary seat; Bob and Carol are eligible for the unresolved boundary seats on Monday, Tuesday, and Wednesday; one exists per day. Processing assigns Monday to Alice and distributes Tuesday and Wednesday between Bob and Carol. Randomness may decide which of Bob and Carol receives which remaining day.
+16. Three otherwise equivalent employees are eligible for all five unresolved opportunities. Processing produces boundary-win counts of `2 / 2 / 1` in some employee order. A `3 / 1 / 1` solution is not equally fair and MUST NOT be eligible for random selection.
 
 ## 18. Observability and operations
 
 - OpenTelemetry is the required instrumentation path for logs, metrics, and traces, while the SDK remains disabled by default. Production operators explicitly enable and configure export through profile YAML and/or environment variables.
 - Structured logs include round ID, employee internal ID where necessary, operation, outcome, and trace ID; never passwords, activation codes/authorizations, authentication cookies, password hashes, encryption/signature keys, SMTP credentials, or unnecessary bid details.
-- OpenTelemetry metrics SHOULD cover bid-save success/failure, scheduler duration/status, bidders per date, lock conflicts, and open/completed round counts.
+- OpenTelemetry metrics SHOULD cover bid-save success/failure, scheduler duration/status, bidders per date, boundary-tie candidate and unresolved-slot counts, allocation duration, achieved objective summaries, lock conflicts, and open/completed round counts. Employee identities and complete eligibility patterns MUST NOT be metric labels.
 - Authentication metrics SHOULD cover aggregate start/login/activation success and failure, rate limiting, email delivery failure, and form-cookie authentication failure without using email addresses or other high-cardinality personal identifiers as metric labels.
-- OpenTelemetry traces SHOULD cover inbound REST requests, database operations, and scheduled round processing, with custom spans around allocation where they materially improve diagnosis.
+- OpenTelemetry traces SHOULD cover inbound REST requests, database operations, and scheduled round processing, with custom spans around deterministic classification, global optimisation, final selection, persistence, and accounting where they materially improve diagnosis. Do not record bids, candidate identities, random values, or complete solutions as span attributes.
 - Alert when a due round is not completed, no open successor exists, Liquibase fails, or ledger reconciliation fails.
 - Document a manual operational retry that calls the same idempotent processing service; do not repair results with ad hoc duplicate inserts.
 - Back up PostgreSQL. Published history and token ledger are business/audit data.
@@ -1020,7 +1124,7 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 2. Add Liquibase schema, Panache entities/repositories, configuration validation, and bootstrap.
 3. Implement employee provisioning schema, SMTP activation, the custom Argon2id Quarkus identity provider, built-in form authentication, Quarkus REST CSRF, and request authorization.
 4. Implement bidding context/replacement with pessimistic locking.
-5. Implement allocation, ledger, scheduler, and idempotency.
+5. Implement deterministic classification, pure round-level fairness optimisation, canonical final random selection, assignment/audit persistence, ledger derivation, scheduler orchestration, and idempotency.
 6. Implement published assignments and problem/OpenAPI contracts.
 7. Build Flutter authentication, assignments, bidding, help, and responsive navigation.
 8. Add Android reminder/platform behavior and PWA promotion.
@@ -1046,4 +1150,6 @@ Future bidding may allow `FULL_DAY`, `MORNING_ONLY`, or `AFTERNOON_ONLY` per bid
 
 ## 21. Definition of done
 
-Version 1 is complete when all mandatory rules in this document are implemented, the backend builds, tests, and runs on Java 25, the initial Liquibase changelog provisions an empty PostgreSQL database, concurrency and scheduler idempotency tests pass against PostgreSQL, SMTP-backed first-time activation works for provisioned employees, the Argon2id identity provider and Quarkus form authentication/REST CSRF satisfy the security, cookie-renewal, and inactivity-expiry tests, the PWA is served from the Java 25-compatible Jib-built Quarkus image, bid privacy is verified, allocation and ledger acceptance scenarios pass, and the responsive PWA supports the complete core workflow without the optional Android app.
+Version 1 is complete when all mandatory rules in this document are implemented, the backend builds, tests, and runs on Java 25, the initial Liquibase changelog provisions an empty PostgreSQL database, concurrency and scheduler idempotency tests pass against PostgreSQL, SMTP-backed first-time activation works for provisioned employees, the Argon2id identity provider and Quarkus form authentication/REST CSRF satisfy the security, cookie-renewal, and inactivity-expiry tests, the PWA is served from the Java 25-compatible Jib-built Quarkus image, bid privacy is verified, and the responsive PWA supports the complete core workflow without the optional Android app.
+
+Allocation completion specifically requires deterministic token ranking to remain authoritative; every round's boundary ties to be solved as one global problem; maximum unresolved-seat utilisation; maximum distinct boundary-tie winners; lexicographic max-min distribution of additional wins; unbiased randomness only among solutions equivalent under every preceding objective; canonical input-order-independent behavior; stable persisted assignments and round-level audit data; retry without modification of completed results; and successful-bid-only token accounting derived exclusively from the persisted final allocation. All global-fairness, constrained-opportunity, multiple-slot, order-independence, persistence, retry, accounting, and acceptance scenarios in section 17 MUST pass.

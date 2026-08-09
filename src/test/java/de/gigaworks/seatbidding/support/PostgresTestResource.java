@@ -15,6 +15,7 @@ public class PostgresTestResource implements QuarkusTestResourceLifecycleManager
                 .withPassword("seat_bidding");
         postgres.start();
         return Map.of(
+                "db.username", postgres.getUsername(),
                 "quarkus.datasource.jdbc.url", postgres.getJdbcUrl(),
                 "quarkus.datasource.username", postgres.getUsername(),
                 "quarkus.datasource.password", postgres.getPassword());
@@ -25,4 +26,3 @@ public class PostgresTestResource implements QuarkusTestResourceLifecycleManager
         if (postgres != null) postgres.stop();
     }
 }
-

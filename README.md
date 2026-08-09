@@ -98,7 +98,13 @@ where employee_id = (select id from employee where email = lower(btrim('employee
 commit;
 ```
 
-The initial schema already contains the complete application-managed authentication model. Because the application had not been deployed when that schema was finalized, there is no transitional identity migration or legacy employee-data conversion step.
+The deployed `001-initial-schema` remains immutable. Migration `002-global-fairness-allocation` upgrades assignment metadata and introduces the round-level allocation audit. Historical v1 assignments retain their published order, per-assignment tie group, draw value, and algorithm version. Historical boundary draws are explicitly marked `LEGACY_TIE_WINNER` or `LEGACY_TIE_LOSER`; no v2 audit row or global-fairness claim is fabricated for an already completed v1 round.
+
+### Allocation audit encoding v2
+
+Allocation fingerprints use a versioned canonical UTF-8 line encoding with LF separators. Null boundary groups use `-`. Dates are ordered by target date and stable date ID; bids and results are ordered by stable bid ID within each date. The input starts with `seat-bidding-allocation-input|v2`, followed by the round ID and capacity, each date ID/date/capacity/unresolved-seat count, and every positive bid's date ID, bid ID, employee ID, tokens, dense token rank, deterministic classification, and boundary group. The selected solution starts with `seat-bidding-allocation-solution|v2` and records each result's date ID, bid ID, assigned flag, token rank, immutable final rank, resolution, and boundary group. Stored fingerprints are lowercase SHA-256 hex digests of these exact encodings.
+
+Changing the encoding or allocation semantics requires a new algorithm version. Audit fingerprints and objective JSON are diagnostic only; persisted `seat_assignment.assigned` values are the accounting source.
 
 A due bidding round is still processed by `RoundProcessingService.processDueRound()`. Operational retries must call that same idempotent service or restart before the next configured trigger; never repair assignments or ledger rows with ad-hoc inserts.
 

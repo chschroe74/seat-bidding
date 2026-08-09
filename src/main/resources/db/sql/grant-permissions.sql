@@ -18,9 +18,12 @@ BEGIN
 
   -- Grant USAGE on all sequences in public schema
   FOR seq IN
-    SELECT sequence_schema, sequence_name
-    FROM information_schema.sequences
-    WHERE sequence_schema = 'public'
+    SELECT namespace.nspname AS sequence_schema,
+           sequence.relname AS sequence_name
+    FROM pg_catalog.pg_class sequence
+    JOIN pg_catalog.pg_namespace namespace ON namespace.oid = sequence.relnamespace
+    WHERE namespace.nspname = 'public'
+      AND sequence.relkind = 'S'
   LOOP
     EXECUTE format('GRANT USAGE ON SEQUENCE %I.%I TO %I;',
                    seq.sequence_schema, seq.sequence_name, app_user);
