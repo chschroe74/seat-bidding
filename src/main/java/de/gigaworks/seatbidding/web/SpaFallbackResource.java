@@ -32,4 +32,11 @@ public class SpaFallbackResource {
         return index(ignored);
     }
     
+    @GET
+    @Path("admin/reservations")
+    @Produces(MediaType.TEXT_HTML)
+    public Response reservations() throws IOException {
+        return index("admin/reservations");
+    }
+    
 }

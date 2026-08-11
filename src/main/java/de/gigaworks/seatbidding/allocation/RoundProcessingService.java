@@ -12,6 +12,7 @@ import de.gigaworks.seatbidding.persistence.RoundParticipationRepository;
 import de.gigaworks.seatbidding.persistence.RoundStatus;
 import de.gigaworks.seatbidding.persistence.SeatAssignmentEntity;
 import de.gigaworks.seatbidding.persistence.SeatAssignmentRepository;
+import de.gigaworks.seatbidding.persistence.SeatReservationRepository;
 import de.gigaworks.seatbidding.persistence.TokenLedgerEntity;
 import de.gigaworks.seatbidding.persistence.TokenLedgerRepository;
 import de.gigaworks.seatbidding.round.RoundFactory;
@@ -46,6 +47,9 @@ public class RoundProcessingService {
     SeatAssignmentRepository assignments;
 
     @Inject
+    SeatReservationRepository reservations;
+
+    @Inject
     RoundAllocationAuditRepository allocationAudits;
 
     @Inject
@@ -74,11 +78,22 @@ public class RoundProcessingService {
         round.status = RoundStatus.PROCESSING;
         round.processingStartedAt = now;
         var roundDates = dates.findForRound(round.id);
+        var reservationByDate = reservations.findForDatesForUpdate(
+                roundDates.stream().map(date -> date.targetDate).toList()).stream()
+                .collect(Collectors.toMap(reservation -> reservation.targetDate, Function.identity()));
         var roundBids = bids.findForRound(round.id);
         var datesById = roundDates.stream().collect(Collectors.toMap(date -> date.id, Function.identity()));
         var bidsById = roundBids.stream().collect(Collectors.toMap(bid -> bid.id, Function.identity()));
         var solution = allocation.allocate(round.id, round.seatCapacity,
-                roundDates.stream().map(date -> new RoundAllocation.TargetDate(date.id, date.targetDate)).toList(),
+                roundDates.stream().map(date -> {
+                    var reservation = reservationByDate.get(date.targetDate);
+                    int reserved = reservation == null ? 0 : reservation.reservedSeatCount;
+                    if (reserved > round.seatCapacity) {
+                        throw new IllegalStateException("reservation exceeds the round's physical seat capacity");
+                    }
+                    return new RoundAllocation.TargetDate(date.id, date.targetDate,
+                            reservation == null ? null : reservation.id, reserved, round.seatCapacity - reserved);
+                }).toList(),
                 roundBids.stream().map(bid -> new RoundAllocation.Bid(bid.roundDate.id, bid.roundDate.targetDate,
                         bid.id, bid.participation.employee.id, bid.tokens)).toList());
 

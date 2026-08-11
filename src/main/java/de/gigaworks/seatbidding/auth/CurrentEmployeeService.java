@@ -15,7 +15,7 @@ public class CurrentEmployeeService {
     @Transactional
     public MeResponse current() {
         var employee = identity.resolve();
-        return new MeResponse(employee.id, employee.firstName, employee.lastName, employee.email);
+        return new MeResponse(employee.id, employee.firstName, employee.lastName, employee.email, employee.admin);
     }
     
 }

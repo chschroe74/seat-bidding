@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:seat_bidding/core/api_client.dart';
 import 'package:seat_bidding/core/auth_service.dart';
 import 'package:seat_bidding/core/managed_cookie_store.dart';
+import 'package:seat_bidding/core/models.dart';
 
 void main() {
   test(
@@ -19,8 +20,34 @@ void main() {
       final result = await api.replaceBids(7, {DateTime(2026, 8, 10): 12});
 
       expect(result.bidTotal, 12);
+      expect(result.seatCapacity, 6);
+      expect(result.days.single.reservedSeatCount, 2);
+      expect(result.days.single.assignableSeatCapacity, 4);
+      expect(result.days.single.reservationDescription, 'Customer workshop');
       expect(adapter.putCount, 2);
       expect(auth.refreshCount, 1);
+    },
+  );
+
+  test(
+    'admin rejection removes administrator state from the current UI',
+    () async {
+      final dio = Dio()..httpClientAdapter = _ForbiddenAdminAdapter();
+      final auth = AuthService.testing(dio, _NoopCookieStore())
+        ..user = const CurrentUser(
+          id: 1,
+          firstName: 'Ada',
+          lastName: 'Admin',
+          email: 'ada@example.com',
+          isAdmin: true,
+        );
+      final api = ApiClient(auth);
+
+      await expectLater(
+        api.seatReservations(DateTime(2030, 1, 1), DateTime(2030, 1, 31)),
+        throwsA(isA<DioException>()),
+      );
+      expect(auth.user?.isAdmin, isFalse);
     },
   );
 }
@@ -67,11 +94,19 @@ class _BidAdapter implements HttpClientAdapter {
           'cutoffAt': '2026-08-07T20:00:00Z',
           'cutoffTimeZone': 'Europe/Berlin',
           'serverTime': '2026-08-06T10:00:00Z',
+          'seatCapacity': 6,
           'startingBalance': 60,
           'bidTotal': 12,
           'availableToBid': 48,
           'days': [
-            {'date': '2026-08-10', 'weekday': 'MONDAY', 'tokens': 12},
+            {
+              'date': '2026-08-10',
+              'weekday': 'MONDAY',
+              'tokens': 12,
+              'reservedSeatCount': 2,
+              'assignableSeatCapacity': 4,
+              'reservationDescription': 'Customer workshop',
+            },
           ],
         }),
         200,
@@ -83,6 +118,27 @@ class _BidAdapter implements HttpClientAdapter {
     return ResponseBody.fromString('', 404);
   }
 
+  @override
+  void close({bool force = false}) {}
+}
+
+class _ForbiddenAdminAdapter implements HttpClientAdapter {
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async => ResponseBody.fromString(
+    jsonEncode({
+      'status': 403,
+      'code': 'ADMIN_REQUIRED',
+      'detail': 'Administrator access is required.',
+    }),
+    403,
+    headers: {
+      Headers.contentTypeHeader: [Headers.jsonContentType],
+    },
+  );
   @override
   void close({bool force = false}) {}
 }

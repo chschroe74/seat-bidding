@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
@@ -13,7 +14,7 @@ class BidsScreen extends StatefulWidget {
   State<BidsScreen> createState() => _BidsScreenState();
 }
 
-class _BidsScreenState extends State<BidsScreen> {
+class _BidsScreenState extends State<BidsScreen> with WidgetsBindingObserver {
   BiddingContext? contextData;
   BidDraft? draft;
   final controllers = <DateTime, TextEditingController>{};
@@ -21,11 +22,13 @@ class _BidsScreenState extends State<BidsScreen> {
   String? message;
   bool dirty = false;
   bool saving = false;
+  bool refreshing = false;
   Timer? ticker;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     load();
     ticker = Timer.periodic(
       const Duration(seconds: 30),
@@ -35,6 +38,7 @@ class _BidsScreenState extends State<BidsScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     ticker?.cancel();
     for (final value in controllers.values) {
       value.dispose();
@@ -42,10 +46,29 @@ class _BidsScreenState extends State<BidsScreen> {
     super.dispose();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && contextData != null) {
+      load();
+    }
+  }
+
   Future<void> load() async {
+    if (refreshing) return;
+    if (mounted) setState(() => refreshing = true);
     try {
       final loaded = await widget.api.currentBidding();
       if (!mounted) return;
+      if (contextData?.roundId == loaded.roundId && dirty) {
+        setState(() {
+          contextData = loaded;
+          refreshing = false;
+          message =
+              'Seat availability refreshed; your unsaved bids were preserved.';
+        });
+        return;
+      }
+      final discardedDraft = dirty && contextData?.roundId != loaded.roundId;
       for (final value in controllers.values) {
         value.dispose();
       }
@@ -63,13 +86,17 @@ class _BidsScreenState extends State<BidsScreen> {
           values: values,
         );
         dirty = false;
-        message = null;
+        refreshing = false;
+        message = discardedDraft
+            ? 'The bidding round changed. Your previous unsaved draft was discarded.'
+            : null;
       });
     } catch (_) {
       if (mounted) {
-        setState(
-          () => message = 'Bids could not be loaded. Check your connection.',
-        );
+        setState(() {
+          refreshing = false;
+          message = 'Bids could not be loaded. Check your connection.';
+        });
       }
     }
   }
@@ -138,6 +165,18 @@ class _BidsScreenState extends State<BidsScreen> {
       });
     } catch (error) {
       if (!mounted) return;
+      final attemptedRound = contextData!.roundId;
+      if (_status(error) == 409) {
+        setState(() => saving = false);
+        await load();
+        if (!mounted) return;
+        setState(() {
+          message = contextData!.roundId == attemptedRound
+              ? '${_detail(error)} Your unsaved bids were preserved.'
+              : 'The bidding round changed. Your previous unsaved draft was discarded.';
+        });
+        return;
+      }
       setState(() {
         saving = false;
         message = error.toString();
@@ -178,7 +217,27 @@ class _BidsScreenState extends State<BidsScreen> {
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          Text('Place bids', style: Theme.of(context).textTheme.headlineMedium),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Place bids',
+                  style: Theme.of(context).textTheme.headlineMedium,
+                ),
+              ),
+              IconButton(
+                key: const Key('refresh-bidding-context'),
+                tooltip: 'Refresh bids and seat availability',
+                onPressed: refreshing || saving ? null : load,
+                icon: refreshing
+                    ? const SizedBox.square(
+                        dimension: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.refresh),
+              ),
+            ],
+          ),
           Text(
             'Cutoff: ${DateFormat.yMd().add_Hm().format(cutoff)} (${contextData!.cutoffTimeZone})',
           ),
@@ -211,61 +270,114 @@ class _BidsScreenState extends State<BidsScreen> {
             ),
           for (final day in contextData!.days)
             Card(
-              child: ListTile(
-                title: Text(
-                  '${DateFormat.EEEE().format(day.date)}  ${DateFormat('dd/MM').format(day.date)}',
-                ),
-                leading: Checkbox(
-                  value: selected.contains(day.date),
-                  onChanged: (draft!.values[day.date] ?? 0) > 0
-                      ? null
-                      : (value) => setState(
-                          () => value!
-                              ? selected.add(day.date)
-                              : selected.remove(day.date),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  ListTile(
+                    title: Text(
+                      '${DateFormat.EEEE().format(day.date)}  ${DateFormat('dd/MM').format(day.date)}',
+                    ),
+                    leading: Checkbox(
+                      value: selected.contains(day.date),
+                      onChanged: (draft!.values[day.date] ?? 0) > 0
+                          ? null
+                          : (value) => setState(
+                              () => value!
+                                  ? selected.add(day.date)
+                                  : selected.remove(day.date),
+                            ),
+                    ),
+                    subtitle: TextField(
+                      controller: controllers[day.date],
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                      onChanged: (value) => changed(day.date, value),
+                      decoration: const InputDecoration(
+                        labelText: 'Tokens',
+                        helperText: 'Whole tokens, zero means no bid',
+                      ),
+                    ),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          tooltip: 'Add one token',
+                          onPressed: draft!.remaining <= 0
+                              ? null
+                              : () {
+                                  final next =
+                                      (draft!.values[day.date] ?? 0) + 1;
+                                  controllers[day.date]!.text = '$next';
+                                  changed(day.date, '$next');
+                                },
+                          icon: const Icon(Icons.add),
                         ),
-                ),
-                subtitle: TextField(
-                  controller: controllers[day.date],
-                  keyboardType: TextInputType.number,
-                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                  onChanged: (value) => changed(day.date, value),
-                  decoration: const InputDecoration(
-                    labelText: 'Tokens',
-                    helperText: 'Whole tokens, zero means no bid',
+                        IconButton(
+                          tooltip: 'Remove one token',
+                          onPressed: (draft!.values[day.date] ?? 0) == 0
+                              ? null
+                              : () {
+                                  final next =
+                                      (draft!.values[day.date] ?? 0) - 1;
+                                  controllers[day.date]!.text = next == 0
+                                      ? ''
+                                      : '$next';
+                                  changed(day.date, '$next');
+                                },
+                          icon: const Icon(Icons.remove),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    IconButton(
-                      tooltip: 'Add one token',
-                      onPressed: draft!.remaining <= 0
-                          ? null
-                          : () {
-                              final next = (draft!.values[day.date] ?? 0) + 1;
-                              controllers[day.date]!.text = '$next';
-                              changed(day.date, '$next');
-                            },
-                      icon: const Icon(Icons.add),
+                  Container(
+                    key: Key(
+                      'reservation-context-${day.date.toIso8601String()}',
                     ),
-                    IconButton(
-                      tooltip: 'Remove one token',
-                      onPressed: (draft!.values[day.date] ?? 0) == 0
-                          ? null
-                          : () {
-                              final next = (draft!.values[day.date] ?? 0) - 1;
-                              controllers[day.date]!.text = next == 0
-                                  ? ''
-                                  : '$next';
-                              changed(day.date, '$next');
-                            },
-                      icon: const Icon(Icons.remove),
+                    margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.surfaceContainerLow,
+                      borderRadius: BorderRadius.circular(8),
                     ),
-                  ],
-                ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 6,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          children: [
+                            if (day.reservedSeatCount > 0)
+                              Chip(
+                                avatar: const Icon(Icons.event_busy, size: 18),
+                                label: Text(
+                                  '${day.reservedSeatCount} reserved',
+                                ),
+                              ),
+                            Text(
+                              '${day.assignableSeatCapacity} of ${contextData!.seatCapacity} seats available for assignment',
+                              style: Theme.of(context).textTheme.labelLarge,
+                            ),
+                          ],
+                        ),
+                        if (day.reservationDescription != null) ...[
+                          const SizedBox(height: 6),
+                          Text(
+                            day.reservationDescription!,
+                            key: Key(
+                              'reservation-description-${day.date.toIso8601String()}',
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ],
               ),
             ),
+          const Text(
+            'Reservations reduce seats available for assignment. They do not change your token balance, bid limits, or bid cost.',
+          ),
           const Text(
             'Only successful bids are deducted. All remaining tokens—including unsuccessful bids—are still subject to the carry-over cap.',
           ),
@@ -305,4 +417,18 @@ class _BidsScreenState extends State<BidsScreen> {
       ),
     );
   }
+
+  static int? _status(Object error) => error is DioException
+      ? error.response?.statusCode ??
+            (error.error is Problem ? (error.error as Problem).status : null)
+      : error is Problem
+      ? error.status
+      : null;
+
+  static String _detail(Object error) =>
+      error is DioException && error.error is Problem
+      ? (error.error as Problem).detail
+      : error is Problem
+      ? error.detail
+      : 'Bids could not be saved.';
 }

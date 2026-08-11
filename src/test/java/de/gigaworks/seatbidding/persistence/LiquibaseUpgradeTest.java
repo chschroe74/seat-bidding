@@ -18,6 +18,24 @@ import org.testcontainers.containers.PostgreSQLContainer;
 class LiquibaseUpgradeTest {
 
     @Test
+    void installsCompleteMasterChangelogIntoAnEmptyDatabase() throws Exception {
+        try (var postgres = new PostgreSQLContainer<>("postgres:18-alpine")
+                .withDatabaseName("seat_bidding_empty")
+                .withUsername("seat_bidding")
+                .withPassword("seat_bidding")) {
+            postgres.start();
+            update(postgres, "db/changelog/db.changelog-master.yaml", postgres.getUsername());
+            try (var connection = connection(postgres)) {
+                assertEquals(4, scalarInt(connection, "SELECT count(*) FROM databasechangelog"));
+                assertEquals(1, scalarInt(connection, "SELECT count(*) FROM information_schema.tables "
+                        + "WHERE table_schema='public' AND table_name='seat_reservation'"));
+                assertEquals(1, scalarInt(connection, "SELECT count(*) FROM information_schema.columns "
+                        + "WHERE table_schema='public' AND table_name='employee' AND column_name='is_admin'"));
+            }
+        }
+    }
+
+    @Test
     void upgradesDeployedSchemaWithoutReinterpretingLegacyDrawsAndReappliesPermissions() throws Exception {
         try (var postgres = new PostgreSQLContainer<>("postgres:18-alpine")
                 .withDatabaseName("seat_bidding_upgrade")
@@ -38,7 +56,7 @@ class LiquibaseUpgradeTest {
             }
             update(postgres, "db/changelog/db.changelog-master.yaml", "seat_bidding_application");
             try (var connection = connection(postgres)) {
-                assertEquals(3, scalarInt(connection, "SELECT count(*) FROM databasechangelog"));
+            assertEquals(4, scalarInt(connection, "SELECT count(*) FROM databasechangelog"));
             }
         }
     }
@@ -88,11 +106,26 @@ class LiquibaseUpgradeTest {
                       (1,1,1,20), (2,1,2,10), (3,1,3,10)
                     """);
             statement.executeUpdate("""
-                    INSERT INTO seat_assignment(id,round_date_id,bid_id,assigned,final_rank,tie_group,draw_value,algorithm_version)
+                    INSERT INTO seat_assignment(id,round_date_id,bid_id,assigned,token_rank,final_rank,resolution,
+                                                boundary_tie_group,tie_group,draw_value,algorithm_version)
                     VALUES
-                      (1,1,1,true,1,null,null,'v1'),
-                      (2,1,2,true,2,'tokens:10','legacy-draw-a','v1'),
-                      (3,1,3,false,3,'tokens:10','legacy-draw-b','v1')
+                      (1,1,1,true,1,1,'FIXED_WINNER',null,null,null,'v2'),
+                      (2,1,2,true,2,2,'GLOBAL_TIE_WINNER','date:1:tokens:10',null,null,'v2'),
+                      (3,1,3,false,2,3,'GLOBAL_TIE_LOSER','date:1:tokens:10',null,null,'v2')
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO round_allocation_audit(id,round_id,algorithm_version,input_fingerprint,
+                                                       objective_summary,selected_solution_fingerprint,
+                                                       random_selection_value)
+                    VALUES (1,1,'v2','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                            '{"filledUnresolvedSlots":1,"distinctTieWinners":1,"sortedTieWinCounts":[0,1]}',
+                            'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb','index:0')
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO token_ledger(id,employee_id,round_id,bid_id,type,amount,idempotency_key,occurred_at)
+                    VALUES
+                      (1,1,1,1,'BID_SPEND',-20,'bid:1:spend','2026-08-07T20:00:01Z'),
+                      (2,2,1,2,'BID_SPEND',-10,'bid:2:spend','2026-08-07T20:00:01Z')
                     """);
         }
     }
@@ -105,11 +138,14 @@ class LiquibaseUpgradeTest {
                         FROM seat_assignment ORDER BY final_rank
                         """)) {
             assertRow(results, 1, true, 1, 1, "FIXED_WINNER", null, null, null);
-            assertRow(results, 2, true, 2, 2, "LEGACY_TIE_WINNER", null, "tokens:10", "legacy-draw-a");
-            assertRow(results, 3, false, 3, 2, "LEGACY_TIE_LOSER", null, "tokens:10", "legacy-draw-b");
+            assertRow(results, 2, true, 2, 2, "GLOBAL_TIE_WINNER", "date:1:tokens:10", null, null);
+            assertRow(results, 3, false, 3, 2, "GLOBAL_TIE_LOSER", "date:1:tokens:10", null, null);
             assertTrue(!results.next());
         }
-        assertEquals(0, scalarInt(connection, "SELECT count(*) FROM round_allocation_audit"));
+        assertEquals(1, scalarInt(connection, "SELECT count(*) FROM round_allocation_audit"));
+        assertEquals(2, scalarInt(connection, "SELECT count(*) FROM token_ledger"));
+        assertEquals(3, scalarInt(connection, "SELECT count(*) FROM employee WHERE is_admin = false"));
+        assertEquals(0, scalarInt(connection, "SELECT count(*) FROM seat_reservation"));
     }
 
     private static void assertRow(ResultSet results, int bidId, boolean assigned, int finalRank, int tokenRank,
@@ -123,7 +159,7 @@ class LiquibaseUpgradeTest {
         assertEquals(boundaryGroup, results.getString("boundary_tie_group"));
         assertEquals(legacyGroup, results.getString("tie_group"));
         assertEquals(legacyDraw, results.getString("draw_value"));
-        assertEquals("v1", results.getString("algorithm_version"));
+        assertEquals("v2", results.getString("algorithm_version"));
     }
 
     private static void assertPermissions(Connection connection) throws SQLException {
@@ -131,6 +167,10 @@ class LiquibaseUpgradeTest {
                 "SELECT has_table_privilege('seat_bidding_application','round_allocation_audit','SELECT,INSERT,UPDATE,DELETE')"));
         assertTrue(scalarBoolean(connection,
                 "SELECT has_sequence_privilege('seat_bidding_application','round_allocation_audit_id_seq','USAGE')"));
+        assertTrue(scalarBoolean(connection,
+                "SELECT has_table_privilege('seat_bidding_application','seat_reservation','SELECT,INSERT,UPDATE,DELETE')"));
+        assertTrue(scalarBoolean(connection,
+                "SELECT has_sequence_privilege('seat_bidding_application','seat_reservation_id_seq','USAGE')"));
     }
 
     private static int scalarInt(Connection connection, String sql) throws SQLException {

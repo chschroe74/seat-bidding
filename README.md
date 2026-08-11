@@ -79,6 +79,15 @@ insert into employee (email, first_name, last_name, password_hash, password_set_
 values (lower(btrim('employee@example.com')), 'First', 'Last', null, null, true);
 ```
 
+Administrator status is deliberately maintained only through controlled database access. Grant it to an already provisioned employee with:
+
+```sql
+update employee set is_admin = true, updated_at = now()
+where email = lower(btrim('employee@example.com'));
+```
+
+Removing the flag blocks subsequent administrator API calls even when the browser still has an older authentication cookie. There are no role-management endpoints or controls in the application.
+
 Disable an employee while retaining bidding history:
 
 ```sql
@@ -98,11 +107,13 @@ where employee_id = (select id from employee where email = lower(btrim('employee
 commit;
 ```
 
-The deployed `001-initial-schema` remains immutable. Migration `002-global-fairness-allocation` upgrades assignment metadata and introduces the round-level allocation audit. Historical v1 assignments retain their published order, per-assignment tie group, draw value, and algorithm version. Historical boundary draws are explicitly marked `LEGACY_TIE_WINNER` or `LEGACY_TIE_LOSER`; no v2 audit row or global-fairness claim is fabricated for an already completed v1 round.
+The deployed `001-initial-schema` and `002-global-fairness-allocation` migrations remain immutable. Migration `003-administrator-seat-reservations` adds administrator flags and dated seat reservations without changing completed allocations. Historical assignments retain their published order, audit data, and algorithm version.
 
-### Allocation audit encoding v2
+The authenticated bidding context and successful bid-replacement response include the round's physical capacity plus each date's reserved count, assignable capacity, and optional public description. These values are read-only context and do not participate in token validation, auto-distribution, or charging.
 
-Allocation fingerprints use a versioned canonical UTF-8 line encoding with LF separators. Null boundary groups use `-`. Dates are ordered by target date and stable date ID; bids and results are ordered by stable bid ID within each date. The input starts with `seat-bidding-allocation-input|v2`, followed by the round ID and capacity, each date ID/date/capacity/unresolved-seat count, and every positive bid's date ID, bid ID, employee ID, tokens, dense token rank, deterministic classification, and boundary group. The selected solution starts with `seat-bidding-allocation-solution|v2` and records each result's date ID, bid ID, assigned flag, token rank, immutable final rank, resolution, and boundary group. Stored fingerprints are lowercase SHA-256 hex digests of these exact encodings.
+### Allocation audit encoding v3
+
+Allocation fingerprints use a versioned canonical UTF-8 line encoding with LF separators. Null reservation IDs and boundary groups use `-`. Dates are ordered by target date and stable date ID; bids and results are ordered by stable bid ID within each date. The input starts with `seat-bidding-allocation-input|v3`, followed by the round ID and physical capacity, each date ID/date/reservation ID/reserved count/assignable capacity/unresolved-seat count, and every positive bid's date ID, bid ID, employee ID, tokens, dense token rank, deterministic classification, and boundary group. Public reservation descriptions are deliberately excluded because they cannot influence allocation. The selected solution starts with `seat-bidding-allocation-solution|v3` and records each result's date ID, bid ID, assigned flag, token rank, immutable final rank, resolution, and boundary group. Stored fingerprints are lowercase SHA-256 hex digests of these exact encodings. Completed `v2` rounds are never reinterpreted.
 
 Changing the encoding or allocation semantics requires a new algorithm version. Audit fingerprints and objective JSON are diagnostic only; persisted `seat_assignment.assigned` values are the accounting source.
 

@@ -56,7 +56,7 @@ public class EmployeeIdentityProvider implements IdentityProvider<UsernamePasswo
         String source = address == null ? "unknown" : address.hostAddress();
         rateLimiter.checkLogin(email, source);
         String password = new String(request.getPassword().getPassword());
-        boolean valid = QuarkusTransaction.requiringNew().call(() -> {
+        var authenticated = QuarkusTransaction.requiringNew().call(() -> {
             var employee = EmailNormalizer.isValid(email) ? employees.findByEmail(email).orElse(null) : null;
             String hash = employee == null || employee.passwordHash == null ? dummyHash : employee.passwordHash;
             boolean verified = password.codePoints().count() <= configuration.password().maximumLength()
@@ -65,17 +65,26 @@ public class EmployeeIdentityProvider implements IdentityProvider<UsernamePasswo
                     && passwordHasher.needsRehash(employee.passwordHash)) {
                 employee.passwordHash = passwordHasher.hash(password);
             }
-            return verified && employee != null && employee.enabled && employee.passwordHash != null;
+            return verified && employee != null && employee.enabled && employee.passwordHash != null
+                    ? new AuthenticatedEmployee(employee.admin) : null;
         });
-        if (!valid) {
+        if (authenticated == null) {
             rateLimiter.loginFailed(email, source);
             throw new AuthenticationFailedException();
         }
         rateLimiter.loginSucceeded(email, source);
-        return QuarkusSecurityIdentity.builder()
+        var builder = QuarkusSecurityIdentity.builder()
                 .setPrincipal(new QuarkusPrincipal(email))
-                .addRole("employee")
-                .build();
+                .addRole("USER");
+        if (authenticated.admin()) {
+            builder.addRole("ADMIN");
+        }
+        return builder.build();
+    }
+    
+    private record AuthenticatedEmployee(
+            boolean admin) {
+        
     }
     
 }

@@ -29,7 +29,8 @@ public class BidRankingClassifier {
         Map<Long, List<RoundAllocation.Bid>> bidsByDate = bids.stream()
                 .collect(Collectors.groupingBy(RoundAllocation.Bid::dateId));
         var dates = targetDates.stream().sorted(DATE_ORDER)
-                .map(date -> classifyDate(date, capacity, bidsByDate.getOrDefault(date.dateId(), List.of())))
+                .map(date -> classifyDate(date, effectiveCapacity(date, capacity),
+                        bidsByDate.getOrDefault(date.dateId(), List.of())))
                 .toList();
         return new RoundAllocation.Problem(roundId, capacity, dates);
     }
@@ -67,7 +68,20 @@ public class BidRankingClassifier {
             biddersAbove = groupEnd;
         }
         return new RoundAllocation.ClassifiedDate(
-                date.dateId(), date.targetDate(), capacity, unresolvedSeats, classified);
+                date.dateId(), date.targetDate(), date.reservationId(), date.reservedSeatCount(),
+                capacity, unresolvedSeats, classified);
+    }
+
+    private static int effectiveCapacity(RoundAllocation.TargetDate date, int physicalCapacity) {
+        int assignable = date.assignableSeatCapacity() < 0 ? physicalCapacity : date.assignableSeatCapacity();
+        if (date.reservedSeatCount() < 0 || assignable < 0
+                || date.reservedSeatCount() + assignable != physicalCapacity) {
+            throw new IllegalArgumentException("reserved and assignable capacity must reconcile to physical capacity");
+        }
+        if ((date.reservationId() == null) != (date.reservedSeatCount() == 0)) {
+            throw new IllegalArgumentException("reservation identity and reserved seat count must be consistent");
+        }
+        return assignable;
     }
 
     private static void validate(List<RoundAllocation.TargetDate> targetDates, List<RoundAllocation.Bid> bids) {

@@ -22,6 +22,9 @@ public record AssignmentsResponse(
             DayOfWeek weekday,
             MyStatus myStatus,
             int assignedCount,
+            int reservedSeatCount,
+            int assignableSeatCapacity,
+            String reservationDescription,
             List<Participant> participants) {
         
     }
@@ -38,4 +41,3 @@ public record AssignmentsResponse(
     }
     
 }
-

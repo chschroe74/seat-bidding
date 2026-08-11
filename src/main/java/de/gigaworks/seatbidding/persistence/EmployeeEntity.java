@@ -24,6 +24,9 @@ public class EmployeeEntity extends AuditedEntity {
     @Column(name = "last_name", nullable = false)
     public String lastName;
     
+    @Column(name = "is_admin", nullable = false)
+    public boolean admin;
+    
     @Column(name = "password_hash", length = 512)
     public String passwordHash;
     

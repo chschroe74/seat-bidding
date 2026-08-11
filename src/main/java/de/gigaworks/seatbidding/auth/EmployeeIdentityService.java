@@ -34,4 +34,13 @@ public class EmployeeIdentityService {
         return resolved;
     }
     
+    public EmployeeEntity requireCurrentAdmin() {
+        var employee = resolve();
+        if (!employee.admin) {
+            throw de.gigaworks.seatbidding.exception.ApplicationProblem
+                    .forbidden("ADMIN_REQUIRED", "Current administrator authorization is required.");
+        }
+        return employee;
+    }
+    
 }

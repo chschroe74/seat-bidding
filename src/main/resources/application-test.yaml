@@ -11,6 +11,7 @@ seat-bidding:
       - https://seat.test
     rate-limit:
       source-per-minute: 1000
+      login-per-fifteen-minutes: 1000
 quarkus:
   http:
     proxy:

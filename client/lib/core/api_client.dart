@@ -43,4 +43,71 @@ class ApiClient {
       rethrow;
     }
   }
+
+  Future<SeatReservationList> seatReservations(
+    DateTime from,
+    DateTime to,
+  ) async {
+    try {
+      return SeatReservationList.fromJson(
+        (await auth.dio.get<Map<String, dynamic>>(
+          '/admin/seat-reservations',
+          queryParameters: {'from': _date(from), 'to': _date(to)},
+        )).data!,
+      );
+    } on DioException catch (error) {
+      if (error.response?.statusCode == 403 ||
+          error.error is Problem && (error.error as Problem).status == 403) {
+        auth.revokeAdminAccess();
+      }
+      rethrow;
+    }
+  }
+
+  Future<SeatReservation> createSeatReservation(
+    DateTime date,
+    int count,
+    String? description,
+  ) async {
+    Future<Response<Map<String, dynamic>>> send() =>
+        auth.dio.post<Map<String, dynamic>>(
+          '/admin/seat-reservations',
+          data: {
+            'date': _date(date),
+            'reservedSeatCount': count,
+            'description': description,
+          },
+        );
+    return SeatReservation.fromJson((await _adminMutation(send)).data!);
+  }
+
+  Future<void> deleteSeatReservation(int id) async {
+    Future<Response<void>> send() =>
+        auth.dio.delete<void>('/admin/seat-reservations/$id');
+    await _adminMutation(send);
+  }
+
+  Future<Response<T>> _adminMutation<T>(
+    Future<Response<T>> Function() send,
+  ) async {
+    try {
+      return await send();
+    } on DioException catch (error) {
+      final problem = error.error;
+      if (problem is Problem &&
+          (problem.code == 'CSRF_INVALID' ||
+              problem.code == 'REQUEST_REJECTED')) {
+        await auth.refreshCsrf();
+        return send();
+      }
+      if (error.response?.statusCode == 403 ||
+          problem is Problem && problem.status == 403) {
+        auth.revokeAdminAccess();
+      }
+      rethrow;
+    }
+  }
+
+  static String _date(DateTime value) =>
+      value.toIso8601String().substring(0, 10);
 }

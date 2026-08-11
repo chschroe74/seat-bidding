@@ -1,5 +1,6 @@
 package de.gigaworks.seatbidding.round;
 
+import de.gigaworks.seatbidding.exception.ConfigurationException;
 import de.gigaworks.seatbidding.persistence.BiddingRoundEntity;
 import de.gigaworks.seatbidding.persistence.BiddingRoundRepository;
 import de.gigaworks.seatbidding.persistence.EmployeeRepository;
@@ -9,6 +10,7 @@ import de.gigaworks.seatbidding.persistence.RoundDateRepository;
 import de.gigaworks.seatbidding.persistence.RoundParticipationEntity;
 import de.gigaworks.seatbidding.persistence.RoundParticipationRepository;
 import de.gigaworks.seatbidding.persistence.RoundStatus;
+import de.gigaworks.seatbidding.persistence.SeatReservationRepository;
 import de.gigaworks.seatbidding.persistence.TokenLedgerEntity;
 import de.gigaworks.seatbidding.persistence.TokenLedgerRepository;
 import de.gigaworks.seatbidding.tokens.BalanceCalculator;
@@ -42,14 +44,23 @@ public class RoundFactory {
     @Inject
     TokenLedgerRepository ledger;
     
+    @Inject
+    SeatReservationRepository reservations;
+    
     public BiddingRoundEntity create(long sequenceNo, Instant opensAt, Instant cutoffSearchStart,
             BiddingRoundEntity predecessor, Map<Long, Integer> carryByEmployee) {
         var zone = configuration.scheduler().timeZone();
+        var cutoffAt = schedule.nextCutoff(configuration.scheduler().cron(), zone, cutoffSearchStart);
+        var targetDates = schedule.targetDates(cutoffAt, zone);
+        var existingReservations = reservations.findForDatesForUpdate(targetDates);
+        if (existingReservations.stream().anyMatch(value -> value.reservedSeatCount > configuration.seatCapacity())) {
+            throw new ConfigurationException("An existing seat reservation exceeds the configured physical capacity");
+        }
         var round = new BiddingRoundEntity();
         round.status = RoundStatus.OPEN;
         round.sequenceNo = sequenceNo;
         round.biddingOpensAt = opensAt;
-        round.cutoffAt = schedule.nextCutoff(configuration.scheduler().cron(), zone, cutoffSearchStart);
+        round.cutoffAt = cutoffAt;
         round.scheduleZone = zone.getId();
         round.tokensGranted = configuration.tokensPerRound();
         round.carryOverCap = configuration.carryOverCap();
@@ -58,7 +69,6 @@ public class RoundFactory {
         rounds.persist(round);
         rounds.flush();
         
-        var targetDates = schedule.targetDates(round.cutoffAt, zone);
         for (int i = 0; i < targetDates.size(); i++) {
             var date = new RoundDateEntity();
             date.round = round;
@@ -109,4 +119,3 @@ public class RoundFactory {
     }
     
 }
-

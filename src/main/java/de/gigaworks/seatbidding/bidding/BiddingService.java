@@ -11,6 +11,8 @@ import de.gigaworks.seatbidding.persistence.BiddingRoundRepository;
 import de.gigaworks.seatbidding.persistence.RoundDateRepository;
 import de.gigaworks.seatbidding.persistence.RoundParticipationRepository;
 import de.gigaworks.seatbidding.persistence.RoundStatus;
+import de.gigaworks.seatbidding.persistence.SeatReservationEntity;
+import de.gigaworks.seatbidding.persistence.SeatReservationRepository;
 import de.gigaworks.seatbidding.round.SeatBiddingConfiguration;
 
 import jakarta.enterprise.context.ApplicationScoped;
@@ -41,6 +43,9 @@ public class BiddingService {
     
     @Inject
     BidRepository bids;
+    
+    @Inject
+    SeatReservationRepository reservations;
     
     @Inject
     SeatBiddingConfiguration configuration;
@@ -103,12 +108,22 @@ public class BiddingService {
         var roundDates = dates.findForRound(participation.round.id);
         var saved = bids.findForParticipation(participation.id).stream()
                 .collect(Collectors.toMap(b -> b.roundDate.id, b -> b.tokens));
+        var reservationsByDate = reservations.findForDates(
+                        roundDates.stream().map(date -> date.targetDate).toList()).stream()
+                .collect(Collectors.toMap(reservation -> reservation.targetDate, Function.identity()));
         int total = saved.values().stream().mapToInt(Integer::intValue).sum();
-        var dayResponses = roundDates.stream().map(date -> new BiddingContextResponse.DayBid(
-                date.targetDate, date.targetDate.getDayOfWeek(), saved.getOrDefault(date.id, 0))).toList();
+        var dayResponses = roundDates.stream().map(date -> {
+            SeatReservationEntity reservation = reservationsByDate.get(date.targetDate);
+            int reservedSeatCount = reservation == null ? 0 : reservation.reservedSeatCount;
+            return new BiddingContextResponse.DayBid(date.targetDate, date.targetDate.getDayOfWeek(),
+                    saved.getOrDefault(date.id, 0), reservedSeatCount,
+                    participation.round.seatCapacity - reservedSeatCount,
+                    reservation == null ? null : reservation.description);
+        }).toList();
         return new BiddingContextResponse(participation.round.id, participation.round.status,
                 participation.round.cutoffAt, participation.round.scheduleZone, now,
-                participation.startingBalance, total, participation.startingBalance - total, dayResponses);
+                participation.round.seatCapacity, participation.startingBalance, total,
+                participation.startingBalance - total, dayResponses);
     }
     
 }

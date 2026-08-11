@@ -1,34 +1,36 @@
 # Office Seat Bidding Application — Implementation Specification
 
-**Status:** Approved implementation specification
-**Target release:** Version 1
-**Primary client:** Flutter Progressive Web App (PWA)
-**Optional client:** Native Flutter Android application
-**Backend:** Java 25, Quarkus, PostgreSQL, Hibernate ORM with Panache, Liquibase, application-managed authentication, Quarkus Scheduler, Jib
+**Status:** Approved implementation specification  
+**Target release:** Version 1.2  
+**Primary client:** Flutter Progressive Web App (PWA)  
+**Optional client:** Native Flutter Android application  
+**Backend:** Java 25, Quarkus, PostgreSQL, Hibernate ORM with Panache, Liquibase, application-managed authentication, Quarkus Scheduler, Jib  
 
 ## 1. Purpose
 
-The application distributes a limited number of office seats fairly among employees. Employees receive tokens for each bidding round and privately bid for individual weekdays. At the configured cutoff, the backend ranks bids per target date, resolves all capacity-boundary ties globally across the round using fairness-aware allocation, uses randomness only to choose among equally optimal global solutions, publishes assignments, deducts only successful bids, and opens the next round.
+The application distributes a limited number of office seats fairly among employees. Employees receive tokens for each bidding round and privately bid for individual weekdays. Administrators may reserve physical seats before allocation, and employees see those reservations while deciding their bids. At the configured cutoff, the backend subtracts those reservations from capacity, ranks bids per target date, resolves all capacity-boundary ties globally across the round using fairness-aware allocation, uses randomness only to choose among equally optimal global solutions, publishes assignments and reservation information, deducts only successful bids, and opens the next round.
 
-This document is the authoritative version 1 implementation contract. Requirements marked **MUST**, **SHOULD**, and **MAY** have their conventional meanings.
+This document is the authoritative version 1.2 implementation contract. Requirements marked **MUST**, **SHOULD**, and **MAY** have their conventional meanings.
 
 ## 2. Scope
 
-### 2.1 Version 1 goals
+### 2.1 Version 1.2 goals
 
 - Support one office and one shared seat capacity for every weekday.
 - Run one weekly round covering Monday through Friday.
 - Let authenticated, pre-provisioned employees view published assignments and replace their bids until cutoff.
+- Show each open-round date's reserved count, assignable capacity, and public reservation description as read-only bidding information.
 - Keep all employees' open-round bids private.
 - Maintain auditable token balances and round results.
+- Let manually designated administrators create and delete dated seat reservations through a desktop-only PWA section before the affected assignments are processed.
 - Serve the compiled Flutter PWA and REST API from one Quarkus application image.
 - Optionally distribute a native Android client using the same API.
 
-### 2.2 Explicitly out of scope
+### 2.2 Explicitly out of scope for version 1.2
 
-- Administrative UI or automatic employee provisioning.
+- Administrative functions other than dated seat reservations, including employee provisioning and administrator-role management.
 - Public-holiday and office-closure handling.
-- Different capacities per day, multiple offices, named desks, or reservations outside bidding.
+- Configurable capacities per day, multiple offices, named desks, or reservation workflows beyond reducing the bidding capacity for a date.
 - Half-day attendance and seat sharing (defined as a future extension in section 20).
 - Non-weekly or overlapping round cadences in the UI.
 - Kubernetes or multiple active scheduler instances.
@@ -44,6 +46,9 @@ This document is the authoritative version 1 implementation contract. Requiremen
 - **Balance:** Tokens available to an employee for the open round.
 - **Bid:** A positive integer token amount for one round date. Zero means no bid and need not be persisted.
 - **Carry-over:** The capped portion of the balance remaining after successful bids are deducted. Tokens committed to unsuccessful bids remain unspent.
+- **Seat reservation:** One administrator-created record that removes a positive number of physical seats from bidding for one future Monday–Friday date and may include a public description.
+- **Physical seat capacity:** The round's configured `seatCapacity` snapshot before reservations.
+- **Assignable seat capacity:** `physicalSeatCapacity - reservedSeatCount` for a target date. It may be zero even though configured physical capacity must be positive.
 - **Cutoff:** An instant computed by the backend from a Quartz cron expression and IANA time zone.
 
 All persisted instants MUST use UTC (`timestamptz`/`Instant`). Target dates use `date`/`LocalDate`. The scheduler interprets its cron expression in the configured IANA zone, including daylight-saving transitions.
@@ -64,11 +69,13 @@ The following settings come from Quarkus application configuration and are valid
 
 Every round MUST snapshot the first three business values, cutoff instant, configured time zone, and schedule-derived target dates. Changing runtime configuration MUST affect only subsequently created rounds, not an already open or completed round.
 
+Reservations do not change the snapshotted physical capacity. The reservation applicable to a target date is read and locked during round processing, and its count determines that date's assignable capacity.
+
 ## 5. Core business rules
 
 ### 5.1 Round and token rules
 
-1. Version 1 has exactly one open round and it contains five consecutive target dates, Monday through Friday. Weekends are excluded; public holidays are treated as ordinary weekdays.
+1. The current release has exactly one open round and it contains five consecutive target dates, Monday through Friday. Weekends are excluded; public holidays are treated as ordinary weekdays.
 2. Each participating employee receives the round's token grant plus carry-over from the preceding round.
 3. After allocation, remaining balance is `startingBalance - successfulBidTokens`. Carry-over is `min(carryOverCap, remainingBalance)`.
 4. The next starting balance is `tokensGrantedPerRound + carryOver`.
@@ -87,24 +94,37 @@ Every round MUST snapshot the first three business values, cutoff instant, confi
 - The backend derives the employee from Quarkus `SecurityIdentity` established by the validated form-authentication cookie; a client-supplied employee identifier is forbidden.
 - Other employees' open-round bids MUST never be returned by any endpoint.
 
-### 5.3 Allocation rules
+### 5.3 Administrative seat reservation rules
+
+1. Only an authenticated employee whose current database record has `is_admin = true` may list, create, or delete reservations. No REST operation or UI control may grant or revoke administrator status.
+2. A reservation has one target date, a positive integer `reservedSeatCount`, and an optional public description. The current release permits at most one reservation record per date; changing it means deleting and recreating it while mutations are still allowed.
+3. The target date MUST be today or later in the scheduler's configured IANA time zone, MUST be Monday through Friday, and MUST not belong to a round that is at/after cutoff, `PROCESSING`, `COMPLETED`, or `FAILED`. Public holidays remain ordinary weekdays.
+4. If the date belongs to the current `OPEN` round, creation and deletion are allowed only strictly before its cutoff. If no round yet contains the future date, the reservation remains mutable until that date is included in an open round and its cutoff is reached.
+5. The reserved count MUST NOT exceed the applicable physical capacity: use the containing open round's snapshotted capacity when present and otherwise the current configured capacity. A future capacity change that would place an existing reservation above capacity is invalid and MUST be rejected before the affected round is opened.
+6. The description is optional, trimmed, plain text, and at most 500 Unicode code points. An empty normalized description is stored as null. It is visible to every authenticated user in the published assignment view, so the admin UI MUST state that it is public and it MUST never be interpreted as markup.
+7. Deletion removes the reservation record. Once the mutation window closes, the reservation is immutable together with the resulting assignments; the current release has no override, update, cancellation, or post-processing adjustment.
+8. Reservations consume no tokens, create no bid or seat-assignment record, do not identify an attendee, and never enter deterministic ranking, global fairness, or random selection. They reduce capacity before bid classification begins.
+
+For each target date, `assignableSeatCapacity = physicalSeatCapacity - reservedSeatCount`, where a missing reservation means zero reserved seats. The backend MUST reject inconsistent data rather than silently clamp a negative result.
+
+### 5.4 Allocation rules
 
 Token ranking remains authoritative for every target date:
 
 1. Select all positive bids and group them by token amount descending.
-2. If the number of bidders is at most seat capacity, every bidder receives a seat and surplus seats remain unassigned.
+2. Calculate the date's assignable seat capacity after reservations. If it is zero, every bidder is unsuccessful. If the number of bidders is at most assignable capacity, every bidder receives a seat and surplus assignable seats remain unassigned.
 3. A token group lying entirely above the capacity boundary consists of fixed winners. A token group lying entirely below it consists of fixed losers.
 4. When an exact-token group crosses the capacity boundary, that group is the date's **boundary tie** and the remaining capacity is its unresolved seat count. Only employees in that boundary tie are eligible for those unresolved seats. A lower-token bidder MUST never displace a fixed winner or a boundary-tie candidate.
 5. Establish all fixed winners and fixed losers for all five target dates before resolving any boundary tie.
 6. Collect every date's boundary candidates and unresolved seats into one round-level constrained allocation problem. An employee is eligible only for unresolved slots belonging to a date on which that employee is in the boundary tie, can receive at most one seat per target date, and may receive seats on multiple different dates. Multiple unresolved seats for one date are represented as multiple slots or an equivalent capacity constraint.
-7. Solve the complete problem using the strict hierarchical objectives in section 5.3.1. No target date may be resolved independently, greedily, or in iteration order.
-8. If several complete allocations remain equivalent under every objective, select one randomly as specified in section 5.3.2.
+7. Solve the complete problem using the strict hierarchical objectives in section 5.4.1. No target date may be resolved independently, greedily, or in iteration order.
+8. If several complete allocations remain equivalent under every objective, select one randomly as specified in section 5.4.2.
 9. Persist one final result for every positive bid, the deterministic classification and boundary membership, the chosen global outcome, stable display rank, and the round-level allocation audit. A completed round MUST never rerun the optimiser or random selector when read.
 10. After the final allocation has been selected and persisted, charge every successful bidder the full bid amount. An unsuccessful bidder spends no tokens for that bid; its full amount remains part of the employee's balance before the carry-over cap is applied.
 
 The conceptual hierarchy is: **token bids determine eligibility; global fairness resolves exact boundary ties; randomness resolves only equally fair global solutions.** The optimiser MUST NOT use historic assignments, prior-round tie outcomes, attendance, token balances, bid cost, carry-over, expiry, or any other token-accounting consequence as a fairness input. Fairness is scoped only to boundary-tie wins in the current bidding round.
 
-#### 5.3.1 Strict global optimisation objectives
+#### 5.4.1 Strict global optimisation objectives
 
 The optimiser MUST apply these objectives in strict priority order. A later objective MUST never reduce the quality achieved by an earlier one:
 
@@ -114,18 +134,21 @@ The optimiser MUST apply these objectives in strict priority order. A later obje
 
 The objectives apply to the complete eligibility structure. Constrained opportunities therefore emerge from the global solution rather than a separate priority rule. For example, if Alice is eligible only for Monday while Bob and Carol are eligible for Monday, Tuesday, and Wednesday, with one unresolved seat on each day, every optimal solution assigns Monday to Alice and distributes Tuesday and Wednesday between Bob and Carol. The implementation MUST NOT approximate this by prioritising employees with fewer eligible days or by processing weekdays sequentially.
 
-#### 5.3.2 Final random selection and published order
+#### 5.4.2 Final random selection and published order
 
 When multiple complete allocations are equivalent under all three objectives, the application MUST use the injected random-selection abstraction, backed by a cryptographically secure random generator in production, to choose among those globally optimal solutions. Randomness MUST NOT be applied to individual dates before global optimisation. Every selectable globally optimal solution MUST have equal selection probability, independent of database row, insertion, weekday, collection-iteration, or bid-loading order. The optimiser MUST canonicalise dates, employees, slots, and equivalent solutions by stable identifiers before invoking the selector.
 
 The selected solution and its round-level random audit value are persisted in the processing transaction. A retry after rollback may select a different equally optimal solution because no result committed; a `COMPLETED` round MUST never be redrawn, recalculated, or changed.
 
-Published ranking places assigned bidders above the seat boundary and unsuccessful bidders below it while keeping token ranking visible. Within the boundary token group, the persisted final ordering MUST agree with the selected global outcome and remain stable. No physical seat number is assigned in version 1.
+`algorithm_version` MUST identify the reservation-aware capacity semantics as well as the fairness algorithm. A deployed algorithm version whose input did not include reservations is not reused for newly processed reservation-aware rounds; historical completed rounds retain their original version and result.
 
-### 5.4 Visibility
+Published ranking places assigned bidders above the seat boundary and unsuccessful bidders below it while keeping token ranking visible. Within the boundary token group, the persisted final ordering MUST agree with the selected global outcome and remain stable. No physical seat number is assigned in the current release.
 
-- Before processing, an employee can see only their own bid set, balance, dates, and public round/configuration metadata.
+### 5.5 Visibility
+
+- Before processing, an employee can see only their own bid set, balance, dates, public round/configuration metadata, and each open-round date's public reservation count, assignable capacity, and description.
 - After processing, all authenticated employees can see all bidders' names, bid amounts, final ordering, and success status for the published round.
+- Published dates show physical capacity, reserved count, assignable capacity, and the reservation's public description where present.
 - Employees who did not bid on a date do not appear in its participant list.
 
 ## 6. Round lifecycle and scheduler
@@ -142,22 +165,23 @@ On a fresh database, an idempotent bootstrap service MUST create an open round w
 
 ### 6.3 Scheduled processing
 
-The `quarkus-scheduler` job runs using the configured Quartz expression and time zone. Version 1 assumes one Quarkus instance; it does not implement distributed locking, clustered Quartz, or leader election. The job MUST nevertheless be transactional and idempotent.
+The `quarkus-scheduler` job runs using the configured Quartz expression and time zone. The current release assumes one Quarkus instance; it does not implement distributed locking, clustered Quartz, or leader election. The job MUST nevertheless be transactional and idempotent.
 
 At each trigger, the service MUST:
 
 1. Find the due `OPEN` round and atomically mark it `PROCESSING`; do nothing if no due round exists.
 2. Lock the round for write and verify that it has not already been processed.
-3. Load all five target dates and all positive bids for the round.
-4. Determine deterministic token rankings for every target date and classify every bid as a fixed winner, fixed loser, or member of the exact-token boundary tie.
-5. Establish all fixed assignments and identify the boundary candidates and unresolved capacity for every affected target date.
-6. Construct the complete round-level unresolved allocation problem, solve objectives 1–3 in their strict order, and randomly choose only if multiple globally equivalent optimal solutions remain.
-7. Persist the final result for every positive bid and the round-level allocation audit. Persistence MUST be based on the selected complete solution, not partial weekday results.
-8. Persist `BID_SPEND` ledger entries for successful bids only.
-9. Calculate each participant's successful-bid spend, remaining balance, carry-over, and closing balance. Unsuccessful bids do not create a debit or refund entry because they are never spent.
-10. Mark the round `COMPLETED` with `processed_at`.
-11. Create exactly one successor `OPEN` round, snapshot current configuration, and create its five dates.
-12. Create participation records for all provisioned employees with `grant + carry-over`.
+3. Load all five target dates, lock their applicable seat reservations, and load all positive bids for the round.
+4. Validate each reservation against the round's physical capacity and calculate each date's assignable capacity.
+5. Determine deterministic token rankings against assignable capacity for every target date and classify every bid as a fixed winner, fixed loser, or member of the exact-token boundary tie.
+6. Establish all fixed assignments and identify the boundary candidates and unresolved assignable capacity for every affected target date.
+7. Construct the complete round-level unresolved allocation problem, solve objectives 1–3 in their strict order, and randomly choose only if multiple globally equivalent optimal solutions remain.
+8. Persist the final result for every positive bid and the round-level allocation audit, including reservation-derived capacity in its canonical input. Persistence MUST be based on the selected complete solution, not partial weekday results.
+9. Persist `BID_SPEND` ledger entries for successful bids only.
+10. Calculate each participant's successful-bid spend, remaining balance, carry-over, and closing balance. Unsuccessful bids do not create a debit or refund entry because they are never spent.
+11. Mark the round `COMPLETED` with `processed_at`.
+12. Create exactly one successor `OPEN` round, snapshot current configuration, validate any existing reservations for its five dates, and create its date rows.
+13. Create participation records for all provisioned employees with `grant + carry-over`.
 
 These operations SHOULD commit in one transaction. If transaction size later becomes a concern, a staged design is allowed only if externally invisible, restartable, and protected by equivalent constraints.
 
@@ -174,13 +198,14 @@ The backend's current instant is authoritative. A request arriving at or after c
 - Employees are created manually in PostgreSQL before they may use the application. The application never self-registers an unknown email address.
 - Email is the only login identifier. It is trimmed, Unicode-normalized as appropriate, converted to lowercase, and matched case-insensitively.
 - Every employee is provisioned with email, first name, and last name. A password hash is initially null.
-- There is no separate username, external identity provider, role model, or administrative UI in version 1.
+- There is no separate username or external identity provider. Every authenticated employee has the `USER` role. An employee whose manually maintained `is_admin` flag is true additionally has the `ADMIN` role.
+- Administrator status is managed only through controlled direct database access. The application provides no endpoint or UI for viewing all users, provisioning employees, or granting/revoking `ADMIN`.
 
 ### 7.2 Quarkus Security architecture
 
 - Use Quarkus's built-in form-based HTTP authentication mechanism to process email/password login, create the encrypted persistent authentication cookie, renew it during activity, resolve authenticated requests to `SecurityIdentity`, and perform server-side logout.
 - Configure form authentication for SPA behavior: no login, landing, or error redirects. Successful submission returns `200`; invalid credentials return `401`.
-- Use a custom Quarkus `IdentityProvider<UsernamePasswordAuthenticationRequest>` only for the missing credential-verification piece. It normalizes the submitted email, loads the employee with Panache, verifies the Argon2id hash through a maintained library, and returns a `SecurityIdentity` whose principal name is the normalized email.
+- Use a custom Quarkus `IdentityProvider<UsernamePasswordAuthenticationRequest>` only for the missing credential-verification piece. It normalizes the submitted email, loads the employee with Panache, verifies the Argon2id hash through a maintained library, and returns a `SecurityIdentity` whose principal name is the normalized email and whose roles are derived from the employee's current `is_admin` value.
 - Do not implement authentication in an ad hoc Jakarta REST filter. Quarkus `HttpAuthenticationMechanism`, `IdentityProvider`, `SecurityIdentity`, path permissions, and security annotations are the integration points.
 - The built-in form login endpoint is `/j_security_check`. It accepts `application/x-www-form-urlencoded` fields `j_username` (the email) and `j_password`.
 - Use `quarkus-rest-csrf` for CSRF token generation and verification. Do not implement a separate CSRF algorithm.
@@ -224,7 +249,7 @@ Email sending uses authenticated SMTP configured at runtime. Persist the new cod
 - The custom Quarkus identity provider compares the submitted password through the Argon2id library and returns a generic invalid-credentials result for an incorrect email/password combination.
 - Apply progressive throttling/rate limits by account and source address. Avoid permanent automatic account lockout that an attacker could use for denial of service.
 - Successful password creation stores the password hash transactionally and consumes activation state. The Flutter client immediately and automatically posts the same email/password to `/j_security_check`; the user is then taken directly into the application without manually logging in again.
-- Version 1 has no password change or forgotten-password flow. An operator may clear the password hash and activation state through a controlled database operation to require activation again; any already issued stateless cookie remains valid until expiry unless the global session-encryption key is rotated.
+- The current release has no password change or forgotten-password flow. An operator may clear the password hash and activation state through a controlled database operation to require activation again; any already issued stateless cookie remains valid until expiry unless the global session-encryption key is rotated.
 
 ### 7.6 Persistent form-authentication cookie
 
@@ -235,7 +260,7 @@ Quarkus form authentication stores the authenticated identity and idle expiry in
 - Configure a strong, externally supplied session-encryption key. Changing that key invalidates all outstanding form-authentication cookies.
 - The authentication cookie is host-only and has `Secure`, `HttpOnly`, `SameSite=Strict`, and `Path=/`. Do not set a `Domain` attribute.
 - Logout uses `FormAuthenticationMechanism.logout(SecurityIdentity)` and expires the current client's cookie.
-- The form cookie is stateless. Version 1 intentionally has no per-device session database, individual server-side session revocation, or separate absolute session lifetime. A copied cookie remains valid until its encrypted idle expiry unless the global encryption key is rotated.
+- The form cookie is stateless. The current release intentionally has no per-device session database, individual server-side session revocation, or separate absolute session lifetime. A copied cookie remains valid until its encrypted idle expiry unless the global encryption key is rotated.
 
 The PWA relies on the browser cookie jar and cannot read the HttpOnly authentication cookie. Flutter web requests must include credentials.
 
@@ -248,6 +273,7 @@ Android uses the same form login endpoint and encrypted authentication cookie. I
 - `/j_security_check` is handled by Quarkus HTTP authentication before Jakarta REST, so it MUST additionally enforce the configured allowed `Origin` (and a safe `Referer` fallback where appropriate) through Quarkus HTTP security customization. Combined with HTTPS and `SameSite=Strict`, this prevents login CSRF without reimplementing the REST CSRF token algorithm.
 - All `/api/*` endpoints except the explicitly documented public configuration, CSRF-token creation, and activation-flow endpoints require Quarkus authentication. `/j_security_check` is also public but CSRF-protected. Health and OpenAPI exposure is controlled separately by deployment configuration.
 - Resources use Quarkus security annotations/path policies and obtain the acting user from `SecurityIdentity`; they never trust a client-provided employee identity.
+- All `/api/admin/*` operations require `ADMIN` through Quarkus path policy and/or `@RolesAllowed("ADMIN")`. Because the form cookie is stateless, every admin operation MUST additionally reload the acting employee and confirm `is_admin = true`; removing the database flag therefore blocks subsequent admin requests even if an older cookie still carries the role. Granting the flag may require a fresh login before the cookie contains `ADMIN`.
 - PWA API calls use relative same-origin `/api/...` URLs. Android uses its configured absolute HTTPS base URL; browser CORS, if enabled at all, uses a strict allowlist.
 - TLS is mandatory outside local development. Apply CSP, HSTS at the HTTPS boundary, secure headers, request-size limits, dependency scanning, secret rotation procedures, and redaction of authentication and personal data in logs.
 - Passwords, activation codes, activation authorizations, authentication cookies, stored hashes, session-encryption/CSRF keys, and SMTP credentials MUST never be returned by ordinary APIs or written to logs, metrics, or traces.
@@ -266,6 +292,8 @@ The lock is scoped to one employee and round, allowing different employees to su
 
 Scheduler processing locks the due round. Password creation locks the employee and activation rows. All balance- and activation-state changes use database transactions even in the initial single-instance deployment; form-cookie renewal itself is handled by Quarkus and has no database transaction.
 
+Reservation creation/deletion runs transactionally. When the target date belongs to an existing round, the service locks that round before rechecking state and cutoff; scheduler processing takes the same round lock before locking/reading reservations. A unique target-date constraint prevents duplicate reservations. Concurrent admin operations that lose the race return `409` with an authoritative refreshed state. Authorization is revalidated from the current employee database row inside the mutation transaction.
+
 ## 9. Database model
 
 Use PostgreSQL-generated `bigint` identities or UUIDs consistently. The following uses `bigint` for readability. Every table SHOULD include `created_at`; mutable tables SHOULD include `updated_at`. All foreign keys are indexed.
@@ -278,12 +306,13 @@ Use PostgreSQL-generated `bigint` identities or UUIDs consistently. The followin
 | `email` | `varchar(320)` | not null, stored normalized lowercase, unique |
 | `first_name` | `varchar(255)` | not null |
 | `last_name` | `varchar(255)` | not null |
+| `is_admin` | `boolean` | not null, default `false` |
 | `password_hash` | `varchar(512)` | nullable encoded Argon2id PHC string |
 | `password_set_at` | `timestamptz` | nullable; set with password hash |
 | `created_at` | `timestamptz` | not null |
 | `updated_at` | `timestamptz` | not null |
 
-Manual provisioning supplies normalized email, first name, and last name. It leaves `password_hash` and `password_set_at` null. Enforce nonblank names/email in application provisioning guidance and a unique normalized email in the database.
+Manual provisioning supplies normalized email, first name, last name, and administrator status. New employees default to non-admin; only controlled direct database maintenance changes `is_admin`. It leaves `password_hash` and `password_set_at` null. Enforce nonblank names/email in application provisioning guidance and a unique normalized email in the database.
 
 ### 9.2 `account_activation`
 
@@ -360,7 +389,20 @@ Unique `(round_id, employee_id)`. This is the row pessimistically locked for bid
 
 Unique `(round_date_id, participation_id)`. Application code verifies both references belong to the same round.
 
-### 9.7 `seat_assignment`
+### 9.7 `seat_reservation`
+
+| Column | Type | Rules |
+|---|---|---|
+| `id` | `bigint` | PK |
+| `target_date` | `date` | not null, unique |
+| `reserved_seat_count` | `integer` | not null, check `> 0` |
+| `description` | `varchar(500)` | nullable; trimmed public plain text |
+| `created_by_employee_id` | `bigint` | FK to `employee`, not null |
+| `created_at` | `timestamptz` | not null |
+
+The reservation is date-based rather than linked to `round_date` so an administrator can create it before that future round exists. Application validation restricts dates to Monday–Friday, enforces the applicable capacity, and controls the mutation window. Index `target_date` through its unique constraint and index `created_by_employee_id`. Physical deletion is allowed only while the reservation is mutable; once cutoff closes, the row is immutable business/audit data needed by published assignments.
+
+### 9.8 `seat_assignment`
 
 | Column | Type | Rules |
 |---|---|---|
@@ -375,7 +417,7 @@ Unique `(round_date_id, participation_id)`. Application code verifies both refer
 
 Persist one result for every positive bid, including unsuccessful bids. Unique `(round_date_id, final_rank)`. `boundary_tie_group` is a deterministic identifier derived from the round date and boundary token amount, is non-null exactly for global tie winners and losers, and is null for fixed outcomes. Check constraints enforce that `assigned` is true exactly for `FIXED_WINNER` and `GLOBAL_TIE_WINNER`, and that group nullability agrees with `resolution`. Index `(round_date_id, resolution)` and `(round_date_id, boundary_tie_group)`. The bid, snapshotted round capacity, `token_rank`, `resolution`, and group identifier make deterministic ranking and boundary membership auditable. `final_rank` is the immutable published ordering: assigned bidders precede the seat boundary, unsuccessful bidders follow it, and token ordering is preserved outside the resolved boundary group.
 
-### 9.8 `round_allocation_audit`
+### 9.9 `round_allocation_audit`
 
 | Column | Type | Rules |
 |---|---|---|
@@ -388,11 +430,11 @@ Persist one result for every positive bid, including unsuccessful bids. Unique `
 | `random_selection_value` | `varchar(255)` | nullable; auditable selector value, seed, or index when equivalent optima required random choice |
 | `created_at` | `timestamptz` | not null |
 
-Create exactly one audit row whenever a round is processed, including a round with no boundary ties; in that case the random value is null and the fingerprints still identify the deterministic input and result. The canonical input includes the round snapshot, chronological target dates, every positive bid with stable employee/bid identifiers and token amount, deterministic classification, boundary eligibility, and unresolved capacities. The canonical selected solution includes every positive bid's final outcome. Both encodings order employees/bids by stable database identifier, are specified by `algorithm_version`, and never depend on query or collection order. `objective_summary` is diagnostic and MUST be validated against the selected assignments rather than trusted as an input to accounting.
+Create exactly one audit row whenever a round is processed, including a round with no boundary ties; in that case the random value is null and the fingerprints still identify the deterministic input and result. The canonical input includes the round snapshot, chronological target dates, each date's reservation identifier/count and resulting assignable capacity, every positive bid with stable employee/bid identifiers and token amount, deterministic classification, boundary eligibility, and unresolved capacities. The canonical selected solution includes every positive bid's final outcome. Both encodings order employees/bids by stable database identifier, are specified by `algorithm_version`, and never depend on query or collection order. Public reservation descriptions are excluded from allocation fingerprints because they cannot affect results. `objective_summary` is diagnostic and MUST be validated against the selected assignments rather than trusted as an input to accounting.
 
-The random value describes selection among complete globally optimal solutions and therefore belongs at round level, not on individual assignments. The selected outcome itself is fully materialised in `seat_assignment`; reads never reconstruct it from fingerprints or rerun the optimiser. Audit values, algorithm version, persisted assignments, immutable bids, and the round snapshot together MUST be sufficient to explain which bids were fixed, which entered boundary resolution, what objective values were achieved, and which final solution committed.
+The random value describes selection among complete globally optimal solutions and therefore belongs at round level, not on individual assignments. The selected outcome itself is fully materialised in `seat_assignment`; reads never reconstruct it from fingerprints or rerun the optimiser. Audit values, algorithm version, persisted assignments, immutable bids and reservations, and the round snapshot together MUST be sufficient to explain capacity, which bids were fixed, which entered boundary resolution, what objective values were achieved, and which final solution committed.
 
-### 9.9 `token_ledger`
+### 9.10 `token_ledger`
 
 | Column | Type | Rules |
 |---|---|---|
@@ -407,22 +449,22 @@ The random value describes selection among complete globally optimal solutions a
 
 The participation row is the efficient balance snapshot; the ledger is the accounting audit source. `BID_SPEND` is written only for a bid whose persisted `seat_assignment.assigned` value is true. Allocation is final before accounting begins; the optimiser does not inspect accounting consequences. Ledger and participation totals MUST reconcile with the selected persisted solution in tests. `EXPIRY` records remaining tokens removed by the carry-over cap.
 
-### 9.10 Panache mapping
+### 9.11 Panache mapping
 
-Use explicit entity classes and repositories, including mappings for `SeatAssignment` resolution metadata and `RoundAllocationAudit` JSON/fingerprint fields. Avoid exposing entities directly as REST DTOs. Mark associations lazy where practical, prevent N+1 queries with dedicated projections/fetch joins, and use enum converters for state/type values. Database constraints are mandatory even where Bean Validation duplicates them. Scheduler persistence MUST insert the audit and all assignment rows in the same transaction before token accounting and round completion.
+Use explicit entity classes and repositories, including mappings for `SeatReservation`, `SeatAssignment` resolution metadata, and `RoundAllocationAudit` JSON/fingerprint fields. Avoid exposing entities directly as REST DTOs. Mark associations lazy where practical, prevent N+1 queries with dedicated projections/fetch joins, and use enum converters for state/type values. Database constraints are mandatory even where Bean Validation duplicates them. Scheduler persistence MUST insert the audit and all assignment rows in the same transaction before token accounting and round completion.
 
 ## 10. Liquibase
 
 - `db/changelog/db.changelog-master.yaml` is the sole Liquibase entry point configured in Quarkus. It is an orchestration changelog and includes, in this order:
   1. `db/changelog/db.changelog-changes.yaml` for versioned database changes;
   2. `db/changelog/grant-permissions.yaml` for runtime-role permissions.
-- `db/changelog/db.changelog-changes.yaml` is the second-level aggregate changelog. It includes ordered change files from `db/changelog/changes/`; version 1 currently starts with `changes/001-initial-schema.yaml`. Future versioned schema or data changes are added as new, sequentially named files and included from this aggregate rather than directly from the master changelog.
-- `001-initial-schema.yaml` is the deployed baseline and MUST NOT be edited. Every feature that requires a schema or persistent-data change MUST introduce one or more new, sequentially numbered change files under `db/changelog/changes/` and add them to `db.changelog-changes.yaml` in execution order. This applies to the current `seat_assignment` resolution metadata and `round_allocation_audit` requirements unless those structures already exist in an applied changeset. New migrations MUST preserve and upgrade existing production data safely, using staged backfills, constraints, and preconditions where required.
+- `db/changelog/db.changelog-changes.yaml` is the second-level aggregate changelog. It includes ordered change files from `db/changelog/changes/`; the deployed changelog begins with `changes/001-initial-schema.yaml`. Future versioned schema or data changes are added as new, sequentially named files and included from this aggregate rather than directly from the master changelog.
+- `001-initial-schema.yaml` is the deployed baseline and MUST NOT be edited. Every feature that requires a schema or persistent-data change MUST introduce one or more new, sequentially numbered change files under `db/changelog/changes/` and add them to `db.changelog-changes.yaml` in execution order. This applies to the current `employee.is_admin`, `seat_reservation`, `seat_assignment` resolution metadata, and `round_allocation_audit` requirements unless those structures already exist in an applied changeset. New migrations MUST preserve and upgrade existing production data safely, using staged backfills, constraints, and preconditions where required. Existing employees are backfilled with `is_admin = false`; an operator grants the first administrator directly in the database after deployment.
 - `db/changelog/grant-permissions.yaml` contains the separate `set-permissions` changeset with `runAlways: true`. It runs after all versioned changes and executes `db/sql/grant-permissions.sql` as one PostgreSQL block with statement splitting disabled and comments retained. The SQL grants `SELECT`, `INSERT`, `UPDATE`, and `DELETE` on every non-Liquibase table in the `public` schema and `USAGE` on every sequence in that schema to the role supplied through the Liquibase `${applicationUser}` change-log parameter. The migrator must have authority to issue those grants.
 - The Quarkus Liquibase configuration MUST point to `db/changelog/db.changelog-master.yaml` and provide `applicationUser` from the configured application database username. Permission application therefore covers newly created tables and sequences on every migration run without mixing permission logic into individual versioned change files.
 - A separate idempotent application bootstrap mechanism creates the first bidding round; environment-specific employees and runtime round data MUST NOT be inserted by production changelogs.
 - Provide rollback blocks where safe. Every changeset applied to any deployed environment is immutable: its identifier, author, path, and contents MUST remain stable, and subsequent changes are always appended through newly numbered change files.
-- Quarkus runs Liquibase at application startup. Production deployment MUST ensure only one migrator runs; this follows naturally from the version 1 single-instance topology.
+- Quarkus runs Liquibase at application startup. Production deployment MUST ensure only one migrator runs; this follows naturally from the current release's single-instance topology.
 - Integration tests MUST both (a) start from an empty PostgreSQL database and apply the complete master changelog through both include levels and (b) exercise each new migration from the preceding deployed schema with representative existing data. Tests verify the resulting schema, preserved/backfilled data, constraints, and permission changes.
 
 ## 11. REST API
@@ -537,11 +579,57 @@ Returns resolved profile data and no other employee's private data:
   "id": 42,
   "firstName": "Alex",
   "lastName": "Example",
-  "email": "alex@example.com"
+  "email": "alex@example.com",
+  "isAdmin": true
 }
 ```
 
-### 11.4 Bidding context
+`isAdmin` is loaded from the current employee database row and controls role-aware presentation only; backend admin endpoints independently enforce and revalidate administrator status.
+
+### 11.4 Administrative seat reservations
+
+All operations in this section require authentication, the `ADMIN` role, and a current database recheck of `employee.is_admin`. State-changing operations also require the CSRF cookie/header contract.
+
+`GET /api/admin/seat-reservations?from=YYYY-MM-DD&to=YYYY-MM-DD`
+
+Both dates are required, inclusive, and `from <= to`; the maximum range is 366 days. The response is ordered by date and returns an empty array when no reservations exist:
+
+```json
+{
+  "serverTime": "2026-08-11T10:15:00Z",
+  "timeZone": "Europe/Berlin",
+  "reservations": [{
+    "id": 81,
+    "date": "2026-08-17",
+    "reservedSeatCount": 3,
+    "physicalSeatCapacity": 12,
+    "description": "Customer workshop",
+    "mutable": true,
+    "cutoffAt": "2026-08-14T20:00:00Z",
+    "roundStatus": "OPEN"
+  }]
+}
+```
+
+For a future date not yet belonging to a round, `cutoffAt` and `roundStatus` are null, `mutable` is true, and `physicalSeatCapacity` is the current configured value.
+
+`POST /api/admin/seat-reservations`
+
+```json
+{
+  "date": "2026-08-17",
+  "reservedSeatCount": 3,
+  "description": "Customer workshop"
+}
+```
+
+Creation returns `201 Created`, a `Location` header, and the authoritative reservation representation. A second reservation for the date returns `409`; the current release does not merge or overwrite it.
+
+`DELETE /api/admin/seat-reservations/{reservationId}`
+
+Deletion returns `204 No Content`. It is allowed only while the reservation is mutable. An unknown ID returns `404`; a reservation whose cutoff/state makes it immutable returns `409`. The service uses the stored target date and never accepts a client-supplied date for deletion.
+
+### 11.5 Bidding context
 
 `GET /api/bidding/current`
 
@@ -552,19 +640,34 @@ Returns resolved profile data and no other employee's private data:
   "cutoffAt": "2026-08-07T20:00:00Z",
   "cutoffTimeZone": "Europe/Berlin",
   "serverTime": "2026-08-04T10:15:00Z",
+  "seatCapacity": 12,
   "startingBalance": 70,
   "bidTotal": 20,
   "availableToBid": 50,
   "days": [
-    {"date": "2026-08-10", "weekday": "MONDAY", "tokens": 20},
-    {"date": "2026-08-11", "weekday": "TUESDAY", "tokens": 0}
+    {
+      "date": "2026-08-10",
+      "weekday": "MONDAY",
+      "tokens": 20,
+      "reservedSeatCount": 2,
+      "assignableSeatCapacity": 10,
+      "reservationDescription": "Customer workshop"
+    },
+    {
+      "date": "2026-08-11",
+      "weekday": "TUESDAY",
+      "tokens": 0,
+      "reservedSeatCount": 0,
+      "assignableSeatCapacity": 12,
+      "reservationDescription": null
+    }
   ]
 }
 ```
 
-The response contains all five dates. `availableToBid` is the amount not currently reserved by the editable bid set; it is not the post-allocation balance. `serverTime` supports countdown display; `cutoffAt` is authoritative.
+The response contains all five dates. `seatCapacity` is the round's physical capacity and every day satisfies `assignableSeatCapacity = seatCapacity - reservedSeatCount`. Reservation fields are public, read-only bidding context and do not change token validation or reveal any other employee's bid. `availableToBid` is the token amount not currently committed by the authenticated employee's editable bid set; it is unrelated to reserved physical seats and is not the post-allocation balance. `serverTime` supports countdown display; `cutoffAt` is authoritative.
 
-### 11.5 Replace bids
+### 11.6 Replace bids
 
 `PUT /api/bidding/current/bids`
 
@@ -585,7 +688,7 @@ Semantics:
 - On success return `200` with the same authoritative shape as `GET /api/bidding/current`.
 - Bidding endpoints never accept an email, employee ID, balance, allocation result, or token-spend decision from the client; the acting employee always comes from Quarkus `SecurityIdentity`.
 
-### 11.6 Published assignments
+### 11.7 Published assignments
 
 `GET /api/assignments/latest`
 
@@ -599,7 +702,10 @@ Semantics:
     "date": "2026-08-10",
     "weekday": "MONDAY",
     "myStatus": "ASSIGNED",
-    "assignedCount": 12,
+    "reservedSeatCount": 2,
+    "assignableSeatCapacity": 10,
+    "reservationDescription": "Customer workshop",
+    "assignedCount": 10,
     "participants": [{
       "employeeId": 42,
       "firstName": "Alex",
@@ -613,15 +719,15 @@ Semantics:
 }
 ```
 
-`myStatus` is `NO_BID`, `ASSIGNED`, or `NOT_ASSIGNED`. Participants are already ordered by persisted final rank. Provisioned first and last names are always present.
+Top-level `seatCapacity` is the round's physical capacity. For every day, `assignableSeatCapacity = seatCapacity - reservedSeatCount`; `reservationDescription` is null when none was supplied. `myStatus` is `NO_BID`, `ASSIGNED`, or `NOT_ASSIGNED`. Participants are already ordered by persisted final rank. Provisioned first and last names are always present.
 
 The bidding API is unaffected by global tie resolution, and optimiser internals are not exposed to end users. The published-assignment API returns only the persisted selected result. For a globally resolved equal-token boundary group, assigned members appear above the capacity boundary and unsuccessful members below it in the immutable `final_rank` order.
 
-### 11.7 Help
+### 11.8 Help
 
 Help content SHOULD be bundled with Flutter for availability without another authenticated call. If centrally managed later, use `GET /api/public/help` with versioned/sanitized content.
 
-### 11.8 Error contract
+### 11.9 Error contract
 
 Use `application/problem+json`:
 
@@ -642,11 +748,11 @@ Status mapping:
 
 | Status | Use |
 |---|---|
-| `400` | malformed/invalid values, dates, duplicates, negatives, total over balance |
+| `400` | malformed/invalid values, dates, duplicates, negatives, total over balance, invalid reservation date/count/description/range |
 | `401` | invalid credentials; missing, invalid, or expired Quarkus form-authentication cookie |
-| `403` | authenticated request lacks required CSRF proof or its origin is rejected |
-| `404` | no published/open resource when applicable |
-| `409` | stale round, cutoff passed, round processing, pessimistic lock timeout/concurrent update |
+| `403` | authenticated request lacks required CSRF proof or administrator authorization, or its origin is rejected |
+| `404` | no published/open resource or reservation when applicable |
+| `409` | stale round, cutoff passed, immutable/duplicate reservation, round processing, pessimistic lock timeout/concurrent update |
 | `429` | authentication/code request, resend, verification, or login rate limit exceeded |
 | `500` | unexpected server failure, without sensitive details |
 | `503` | temporary database/service unavailability |
@@ -682,6 +788,7 @@ quarkus-smallrye-health
 auth/            activation, Argon2id identity provider, form-auth integration, rate limiting
 round/           lifecycle, dates, configuration snapshot
 bidding/         bid queries, validation, replacement
+reservation/     admin authorization, dated reservation lifecycle, capacity calculation
 allocation/      round-level ranking, global fairness optimisation, final selection, result mapping
 tokens/          participation balances and ledger
 resource/        REST resource interfaces only
@@ -708,12 +815,13 @@ Domain services own transactions; resource implementations remain thin and conta
 
 ### 12.4 Validation
 
-Use Bean Validation for shape constraints and domain validation for cross-field/state rules. The backend MUST independently repeat all client checks. Startup validation rejects impossible configuration. API input limits should cap array size at five and reject unknown dates/duplicate JSON entries after normalization.
+Use Bean Validation for shape constraints and domain validation for cross-field/state rules. The backend MUST independently repeat all client checks. Startup validation rejects impossible configuration. API input limits should cap bid array size at five and reject unknown dates/duplicate JSON entries after normalization. Reservation validation enforces weekday/date, count, description length, date-range limit, uniqueness, applicable capacity, current administrator status, and mutation state inside the transaction.
 
 ### 12.5 OpenAPI and health
 
 - Publish OpenAPI for all REST DTOs and problem responses. The REST interfaces in `resource` are the authoritative source of endpoint-level OpenAPI metadata; contract tests MUST verify that annotations inherited through `resource.impl` produce the expected OpenAPI document.
 - Define one OpenAPI cookie security scheme for the Quarkus form-authentication cookie. Public operations declare no authentication requirement; protected operations document the cookie scheme and `X-CSRF-TOKEN` header where relevant. `/j_security_check` is a Quarkus framework endpoint and is documented separately because it is not declared by a resource interface.
+- Admin resource interfaces declare the `ADMIN` authorization requirement, CSRF header on mutations, and `403`/`409` problem responses. UI visibility is not a security boundary.
 - Provide liveness and readiness; readiness verifies database connectivity and successful Liquibase state.
 - Scheduler failure is logged/observed but MUST NOT leak details to clients.
 
@@ -728,6 +836,7 @@ Routes:
 ```text
 /assignments   initial authenticated route
 /bids
+/admin/reservations   desktop PWA administrators only
 /help
 /login
 /activate/code
@@ -753,9 +862,10 @@ Quarkus MUST serve `index.html` as an SPA fallback for client routes while exclu
 
 ### 13.3 Navigation
 
-- Primary views are **Seat assignments** and **Place bids**.
-- Desktop/wide PWA uses two labeled tabs or navigation destinations.
+- Primary views are **Seat assignments** and **Place bids**. A desktop/wide PWA authenticated as an administrator additionally shows **Admin** as a third destination leading to seat reservations.
+- Desktop/wide PWA uses two labeled destinations for ordinary users and three for administrators.
 - Mobile uses a two-item tab bar/segmented navigation and MAY allow horizontal swipe; swipe is never the only mechanism.
+- The admin destination and route are not shown in compact/mobile PWA layouts and are absent from the Android application, even for an administrator account. Direct compact-web navigation to `/admin/reservations` shows a non-sensitive desktop-required message rather than reservation controls.
 - Compact layouts use a hamburger menu. Wider layouts use an equivalent conventional menu.
 - The menu contains **Help** and conditionally **Get the Android app**.
 
@@ -770,12 +880,15 @@ Each card displays localized weekday and `dd/MM` date (no year) and has these st
 - red: bid and not assigned;
 - a stronger shade for today when today is among displayed dates;
 - a visible accent border and/or **Today** label when today's state is neutral.
+- a visible reserved-seat count/badge when one or more seats were reserved, regardless of the current employee's bid status.
 
 Between cutoff and the target week, none may be today; no artificial highlight is applied. Colors MUST have text/icon equivalents and accessible contrast.
 
 Expanding a card displays:
 
-- `assignedCount of seatCapacity seats assigned`;
+- `assignedCount of assignableSeatCapacity assignable seats assigned`;
+- `reservedSeatCount of seatCapacity total seats reserved` when the count is positive;
+- the reservation's public description when present, clearly distinguished from employee assignments;
 - participants by final rank;
 - first and last name (fallback as specified by API);
 - token amount;
@@ -790,6 +903,8 @@ Collapsed/expanded state is local UI state. Loading, empty/bootstrap, processing
 The view displays:
 
 - all five next-round weekdays and `dd/MM` dates;
+- each date's read-only reserved-seat count and assignable capacity, with a clear badge/label when the reserved count is positive;
+- the public reservation description beneath the affected date when present;
 - authoritative starting balance, current bid total, and amount still available to bid;
 - numeric token input with increment/decrement controls;
 - one auto-distribution selector per day;
@@ -800,6 +915,7 @@ The view displays:
 Draft behavior:
 
 - Existing saved bids load into fields.
+- Reservation information is never editable from the bidding page and is visually distinct from bid inputs. It is shown to ordinary users and administrators on every supported platform, including Android.
 - Edits remain local until **Save bids**; saving replaces all bids atomically.
 - Unsaved changes trigger route/back confirmation where appropriate.
 - Inputs accept whole numbers only, never below zero.
@@ -808,6 +924,7 @@ Draft behavior:
 - Zero counts as empty and remains eligible for auto-distribution.
 - A positive field disables its auto-distribution selector.
 - The UI explains that only successful bids are deducted and that all remaining tokens, including unsuccessful bids, are still subject to the carry-over cap.
+- The UI explains that reservations reduce the seats available for assignment but do not change the employee's token balance, bid limits, or bid price.
 
 Auto-distribution:
 
@@ -818,9 +935,27 @@ Auto-distribution:
 5. Resulting values become ordinary editable values.
 6. If `share == 0`, do not modify fields and explain that too few tokens remain.
 
+Load current reservation information whenever the bidding context is opened, after a successful save, when the app resumes/returns to the page, and through existing explicit retry/refresh behavior. Real-time push is not required. Refreshing reservation metadata MUST preserve an unsaved local bid draft when the round ID has not changed; if the round changed, use the existing stale-round handling rather than applying the draft silently.
+
 On `409`, preserve the draft, refresh context, and explain whether cutoff or a concurrent/stale round caused failure. Never silently apply a draft to another round.
 
-### 13.6 Help content
+### 13.6 Administrative seat reservations
+
+This page exists only in the desktop/wide PWA and only when `/api/me` reports `isAdmin: true`. The client-side check controls presentation; every backend call still enforces `ADMIN` and rechecks the database flag.
+
+The page provides:
+
+- an accessible date picker with manual `YYYY-MM-DD` entry fallback;
+- a positive whole-number reserved-seat field that displays the applicable physical capacity;
+- an optional description field limited to 500 Unicode code points with a clear warning that the text will be visible to all authenticated users;
+- an **Add reservation** action;
+- a date-range filter and chronologically ordered list of reservations showing date, count, description, round/cutoff state, and whether deletion remains allowed;
+- a confirmed **Delete** action for mutable reservations, disabled with an explanation for immutable ones;
+- loading, empty, validation, `403`, `409`, retryable error, and successful-create/delete states.
+
+The page provides no editing: an admin deletes and recreates a mutable reservation. It contains no employee list and no administrator-management control. After a successful mutation it reloads authoritative server state. A `403` removes the admin destination from the current UI state and returns to a core page; a `409` refreshes the affected reservation and explains that cutoff, processing, or a concurrent action made the change unavailable.
+
+### 13.7 Help content
 
 Help MUST explain:
 
@@ -831,23 +966,24 @@ Help MUST explain:
 - successful bids being charged, unsuccessful bids remaining unspent, and the carry-over cap;
 - first-time email verification, password creation, persistent form-cookie login, inactivity expiry, and logout;
 - assignment colors, today indicator, participant order, and capacity boundary;
+- reserved seats reducing the number available for bidding, with reserved counts, assignable capacity, and public descriptions shown both while bidding and in published assignment cards;
 - surplus/unassigned seats being outside application control;
 - Android reminders where relevant.
 
 End-user help MUST NOT use implementation terminology such as bipartite matching, optimisation objectives, or lexicographic max-min fairness, and MUST NOT imply that each day's boundary tie is drawn independently.
 
-### 13.7 Android app download promotion
+### 13.8 Android app download promotion
 
 When the PWA detects an Android browser, it MAY show **Get the Android app** in the menu and a non-intrusive footer when space permits. It MUST not displace core controls. Hide it in the native app. Detection is progressive enhancement, not a business/security rule, and the target SHOULD be a managed distribution/store page rather than a raw APK.
 
-### 13.8 Accessibility and localization
+### 13.9 Accessibility and localization
 
 - Support keyboard navigation, screen readers, scalable text, touch targets, focus indicators, and WCAG AA contrast.
 - Never communicate status by color alone.
 - Dates are presented as agreed (`dd/MM`) while weekday labels and prose are localizable.
 - Store/transport no locale-specific numeric formats; token values are integers.
 
-### 13.9 PWA behavior
+### 13.10 PWA behavior
 
 - Provide a valid manifest, icons, service worker, and installability metadata.
 - Cache the application shell, not authenticated API responses containing personal data unless a deliberate secure strategy is implemented.
@@ -856,7 +992,7 @@ When the PWA detects an Android browser, it MAY show **Get the Android app** in 
 
 ## 14. Native Android reminder
 
-Only the native Android app shows the reminder icon in version 1. It opens a local configuration UI for:
+Only the native Android app shows the reminder icon in the current release. The Android client has no admin navigation, admin reservation route, or reservation-management UI; administrators still see public reservation information in ordinary assignment cards. The reminder icon opens a local configuration UI for:
 
 - enabled/disabled;
 - one or more weekdays;
@@ -889,7 +1025,7 @@ Use TLS at a reverse proxy/platform boundary. The PWA calls same-origin relative
 
 ### 15.3 Future multi-instance deployment
 
-If Kubernetes is introduced later, the agreed direction is a StatefulSet: all pods serve HTTP, but only ordinal zero (hostname ending `-0`) enables scheduled jobs through deployment configuration/hostname logic. Do not add distributed scheduler coordination in version 1. Database transaction and uniqueness rules remain mandatory for concurrent HTTP traffic.
+If Kubernetes is introduced later, the agreed direction is a StatefulSet: all pods serve HTTP, but only ordinal zero (hostname ending `-0`) enables scheduled jobs through deployment configuration/hostname logic. Do not add distributed scheduler coordination in the current release. Database transaction and uniqueness rules remain mandatory for concurrent HTTP traffic.
 
 ## 16. Quarkus YAML configuration contract
 
@@ -999,7 +1135,8 @@ All backend tests and static-analysis/build jobs MUST execute with JDK 25 so loc
 
 - Balance/grant/carry-over calculations, including successful-bid deductions, cap, and expiry.
 - Successful bids are charged in full; unsuccessful bids create no debit.
-- Capacity zero is rejected at startup; fewer/equal/more bidders than capacity.
+- Configured physical capacity zero is rejected at startup; reservation-derived assignable capacity zero is supported; fewer/equal/more bidders than assignable capacity.
+- Reservation count validation and `assignableSeatCapacity = physicalSeatCapacity - reservedSeatCount`.
 - Deterministic per-date classification of fixed winners, fixed losers, exact boundary candidates, and unresolved capacities.
 - Round-level optimiser objective hierarchy, canonicalisation, and deterministic injected final selector.
 - Friday cutoff, DST transitions, and target-date calculation.
@@ -1008,6 +1145,7 @@ All backend tests and static-analysis/build jobs MUST execute with JDK 25 so loc
 - Six-digit code generation including leading zeroes, keyed digest verification, expiry, failed-attempt exhaustion, resend invalidation, and cooldown calculations.
 - Password-policy length boundaries, Unicode handling, absence of composition rules, matching confirmation, and common/compromised-password blocklist.
 - Custom Argon2id identity-provider success/failure, PHC parsing, parameter-upgrade detection, and generic invalid-credential behavior.
+- `USER`/`ADMIN` role construction and current database revalidation for admin operations.
 
 #### Allocation optimiser test matrix
 
@@ -1047,14 +1185,27 @@ P. **No boundary ties:** deterministic ranking alone produces all results and th
 
 Q. **Surplus capacity:** when bidders are fewer than seats, every bidder wins, surplus seats remain unassigned, and the fairness mechanism invents neither candidates nor assignments.
 
+R. **Reservation reduces capacity before ranking:** with physical capacity 4 and one seat reserved, allocation behaves exactly as capacity 3 while the reservation itself creates no bidder, assignment, or token entry.
+
+S. **All seats reserved:** with reserved count equal to physical capacity, assignable capacity is zero, every positive bidder loses and spends zero tokens, and no unresolved fairness slot is created.
+
+T. **Reservation and global fairness:** reserved capacity changes the actual boundary group and unresolved slot count before the round-level problem is constructed; only that resulting boundary group participates.
+
+U. **Non-allocation description:** changing only a mutable public description before cutoff does not affect allocation input semantics, although the current release performs the change through delete/recreate rather than an update endpoint.
+
 ### 17.2 Integration tests with PostgreSQL
 
 - Liquibase from an empty database and constraint enforcement.
+- Upgrade from the deployed schema adds `employee.is_admin` with existing rows defaulted to false and creates `seat_reservation` without modifying applied changesets or existing business data.
 - Pessimistic serialization of simultaneous submissions for the same participant.
 - Independent employees can update concurrently.
 - Cutoff racing with bid update.
+- Admin reservation create/delete racing with cutoff and scheduler processing serializes on the round; no reservation can change after cutoff or after completion.
+- Reservation uniqueness, weekday/date/count/description/capacity constraints and application validation.
+- Non-admin, stale-role-cookie, and removed-admin attempts against `/api/admin/*` return `403`; granting admin takes effect after fresh authentication.
 - Scheduler rollback/retry and no duplicate assignments, bid-spend ledger entries, or successor round.
 - Global processing persists exactly one `round_allocation_audit`, the complete assignment set, canonical fingerprints, objective summary, algorithm version, and random-selection value where applicable in the same transaction.
+- Allocation audit input includes reservation identifier/count and assignable capacity but excludes the public description; published reservation data remains stable after completion.
 - Database constraints enforce coherent fixed/global-tie resolution metadata and one immutable result per positive bid.
 - Round configuration snapshots remain unchanged after runtime configuration changes.
 - Ledger reconciles with participation balances.
@@ -1075,17 +1226,22 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 
 - OpenAPI matches implemented DTOs.
 - Authentication start, form login, resend, verification, password creation, CSRF, logout, and cookie contracts match the documented OpenAPI operations and cookie security scheme.
+- `/api/me` administrator flag, admin list/create/delete authorization and CSRF contracts, validation limits, and `403`/`404`/`409` responses.
+- Bidding context and successful bid-replacement responses expose physical, reserved, and assignable capacities plus the optional public reservation description for every open-round date without exposing other employees' bids.
+- Published assignments expose physical, reserved, and assignable capacities plus the optional public reservation description.
 - Problem details and all status mappings.
 - Stale `roundId`, dates outside round, duplicate dates, negative/fractional/overspent bids.
 - No employee identifier is accepted or honored.
 
 ### 17.4 Flutter tests
 
-- Widget/golden tests for all assignment colors, today marker, capacity boundary, and responsive layouts.
+- Widget/golden tests for all assignment colors, today marker, reservation information, assignable-capacity boundary, and responsive layouts.
 - Bid balance, spinner states, carry-over explanation, integer division/remainder, zero behavior, and disabled save.
+- Bidding-page reservation badges/counts, assignable capacity, public description, read-only behavior, all-platform visibility, refresh after save/resume, and preservation of an unsaved draft during same-round metadata refresh.
 - Navigation by tap, keyboard, and swipe; unsaved-change handling.
 - Email-first login branching, password login, pending-code resume, resend cooldown, code verification, password requirements/confirmation, automatic form login after password creation, persistent-cookie restoration, inactivity expiry, CSRF recovery, logout, and generic authentication error states.
 - Platform tests ensure reminders are visible only on Android and Android promotion only in eligible PWA contexts.
+- Desktop PWA tests show the third admin destination and reservation CRUD UI only for admins at the wide breakpoint; compact web and Android never expose the controls or route.
 - End-to-end flow: login, load bids, edit/save, cutoff simulation, published result.
 
 ### 17.5 Acceptance scenarios
@@ -1106,6 +1262,11 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 14. Alice, Bob, and Carol are each in the boundary tie for one unresolved seat on Monday, Tuesday, and Wednesday. Processing assigns exactly one boundary-tie seat to each employee. Which employee receives which day may be random among the `1 / 1 / 1` mappings, but no employee receives two or three while another receives none.
 15. Alice is eligible only for the unresolved Monday boundary seat; Bob and Carol are eligible for the unresolved boundary seats on Monday, Tuesday, and Wednesday; one exists per day. Processing assigns Monday to Alice and distributes Tuesday and Wednesday between Bob and Carol. Randomness may decide which of Bob and Carol receives which remaining day.
 16. Three otherwise equivalent employees are eligible for all five unresolved opportunities. Processing produces boundary-win counts of `2 / 2 / 1` in some employee order. A `3 / 1 / 1` solution is not equally fair and MUST NOT be eligible for random selection.
+17. With physical capacity 12 and a three-seat reservation, published data shows 3 reserved and 9 assignable seats. At most nine bidders are assigned; the reservation has no bid, assignment, or token-ledger entry, and its public description is visible.
+18. An administrator creates and deletes a future reservation before cutoff. A non-admin receives `403` for both operations. After cutoff, the same deletion returns `409` and the completed assignment view remains unchanged.
+19. With every physical seat reserved, all positive bidders are unsuccessful, no bid is charged, and the published day clearly shows zero assignable capacity.
+20. After `is_admin` is removed directly in the database, an admin mutation using a previously issued role-bearing cookie is rejected by the mandatory database recheck. No application endpoint can restore the role.
+21. Before placing bids, every employee sees that a date with physical capacity 12 has two reserved seats, ten assignable seats, and the public reservation description. The information is read-only, appears in the bidding context on PWA and Android, does not alter token availability, and remains visible in the published assignment card after processing.
 
 ## 18. Observability and operations
 
@@ -1113,6 +1274,7 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 - Structured logs include round ID, employee internal ID where necessary, operation, outcome, and trace ID; never passwords, activation codes/authorizations, authentication cookies, password hashes, encryption/signature keys, SMTP credentials, or unnecessary bid details.
 - OpenTelemetry metrics SHOULD cover bid-save success/failure, scheduler duration/status, bidders per date, boundary-tie candidate and unresolved-slot counts, allocation duration, achieved objective summaries, lock conflicts, and open/completed round counts. Employee identities and complete eligibility patterns MUST NOT be metric labels.
 - Authentication metrics SHOULD cover aggregate start/login/activation success and failure, rate limiting, email delivery failure, and form-cookie authentication failure without using email addresses or other high-cardinality personal identifiers as metric labels.
+- Admin reservation metrics SHOULD cover aggregate create/delete success, validation/authorization failure, and conflicts. Structured audit logs record reservation ID, target date, count, acting employee ID, and outcome, but not the public description.
 - OpenTelemetry traces SHOULD cover inbound REST requests, database operations, and scheduled round processing, with custom spans around deterministic classification, global optimisation, final selection, persistence, and accounting where they materially improve diagnosis. Do not record bids, candidate identities, random values, or complete solutions as span attributes.
 - Alert when a due round is not completed, no open successor exists, Liquibase fails, or ledger reconciliation fails.
 - Document a manual operational retry that calls the same idempotent processing service; do not repair results with ad hoc duplicate inserts.
@@ -1124,24 +1286,25 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 2. Add Liquibase schema, Panache entities/repositories, configuration validation, and bootstrap.
 3. Implement employee provisioning schema, SMTP activation, the custom Argon2id Quarkus identity provider, built-in form authentication, Quarkus REST CSRF, and request authorization.
 4. Implement bidding context/replacement with pessimistic locking.
-5. Implement deterministic classification, pure round-level fairness optimisation, canonical final random selection, assignment/audit persistence, ledger derivation, scheduler orchestration, and idempotency.
-6. Implement published assignments and problem/OpenAPI contracts.
-7. Build Flutter authentication, assignments, bidding, help, and responsive navigation.
-8. Add Android reminder/platform behavior and PWA promotion.
-9. Complete integration, concurrency, accessibility, container, and end-to-end verification.
+5. Add administrator-role mapping/revalidation, reservation migration/entity/service/resources, and cutoff-safe concurrency.
+6. Implement deterministic classification using assignable capacity, pure round-level fairness optimisation, canonical final random selection, assignment/audit persistence, ledger derivation, scheduler orchestration, and idempotency.
+7. Implement published assignments and problem/OpenAPI contracts, including public reservation information.
+8. Build Flutter authentication, assignments, bidding, desktop admin reservations, help, and responsive navigation.
+9. Add Android reminder/platform behavior and PWA promotion while excluding admin management from Android/compact layouts.
+10. Complete integration, migration, authorization, concurrency, accessibility, container, and end-to-end verification.
 
 ## 20. Future extensions
 
 ### 20.1 Half-day attendance and seat sharing
 
-Future bidding may allow `FULL_DAY`, `MORNING_ONLY`, or `AFTERNOON_ONLY` per bid. Attendance period does not reduce the bid or token cost. Complementary morning/afternoon employees may share one physical seat, so assigned employee count may exceed seat capacity while physical occupancy does not. Both employees pay their full bids and participate normally. Published assignments must make attendance periods and sharing clear. The precise allocation algorithm, tie behavior, schema, and controls are intentionally deferred; version 1 treats every bid and assignment as full-day.
+Future bidding may allow `FULL_DAY`, `MORNING_ONLY`, or `AFTERNOON_ONLY` per bid. Attendance period does not reduce the bid or token cost. Complementary morning/afternoon employees may share one physical seat, so assigned employee count may exceed seat capacity while physical occupancy does not. Both employees pay their full bids and participate normally. Published assignments must make attendance periods and sharing clear. The precise allocation algorithm, tie behavior, schema, and controls are intentionally deferred; the current release treats every bid and assignment as full-day.
 
 ### 20.2 Other deferred enhancements
 
 - Configurable cadences beyond weekly and corresponding UI semantics.
 - Public holidays, exceptional closures, and configurable workdays.
 - Per-day capacity, multiple offices, physical seat numbers, and office attendance management.
-- Administration UI for employees and settings.
+- Additional administration functions, including employee provisioning, administrator-role management, reservation editing, post-cutoff overrides, and application settings.
 - Password change, forgotten-password recovery, operator-assisted reset UI, and self-service session management.
 - Server-driven PWA push reminders and synchronized reminder preferences.
 - Kubernetes StatefulSet deployment with ordinal-zero scheduler activation.
@@ -1150,6 +1313,8 @@ Future bidding may allow `FULL_DAY`, `MORNING_ONLY`, or `AFTERNOON_ONLY` per bid
 
 ## 21. Definition of done
 
-Version 1 is complete when all mandatory rules in this document are implemented, the backend builds, tests, and runs on Java 25, the initial Liquibase changelog provisions an empty PostgreSQL database, concurrency and scheduler idempotency tests pass against PostgreSQL, SMTP-backed first-time activation works for provisioned employees, the Argon2id identity provider and Quarkus form authentication/REST CSRF satisfy the security, cookie-renewal, and inactivity-expiry tests, the PWA is served from the Java 25-compatible Jib-built Quarkus image, bid privacy is verified, and the responsive PWA supports the complete core workflow without the optional Android app.
+Version 1.2 is complete when all mandatory rules in this document are implemented, the backend builds, tests, and runs on Java 25, the full Liquibase changelog provisions an empty PostgreSQL database and safely upgrades the deployed schema, concurrency and scheduler idempotency tests pass against PostgreSQL, SMTP-backed first-time activation works for provisioned employees, the Argon2id identity provider and Quarkus form authentication/REST CSRF satisfy the security, cookie-renewal, and inactivity-expiry tests, the PWA is served from the Java 25-compatible Jib-built Quarkus image, bid privacy is verified, and the responsive PWA supports the complete core workflow without the optional Android app.
 
 Allocation completion specifically requires deterministic token ranking to remain authoritative; every round's boundary ties to be solved as one global problem; maximum unresolved-seat utilisation; maximum distinct boundary-tie winners; lexicographic max-min distribution of additional wins; unbiased randomness only among solutions equivalent under every preceding objective; canonical input-order-independent behavior; stable persisted assignments and round-level audit data; retry without modification of completed results; and successful-bid-only token accounting derived exclusively from the persisted final allocation. All global-fairness, constrained-opportunity, multiple-slot, order-independence, persistence, retry, accounting, and acceptance scenarios in section 17 MUST pass.
+
+The administration extension is complete when `is_admin` is manually maintainable but never application-manageable; backend authorization and current-database revalidation protect every admin operation; a newly numbered Liquibase migration preserves the deployed schema/data; desktop PWA admins can list, create, and delete valid reservations; compact web, ordinary users, and Android expose no management UI; cutoff makes reservations immutable; allocation uses reservation-derived assignable capacity; every employee sees read-only reservation counts, assignable capacity, and descriptions while bidding; published assignments show the same reservation information; and all migration, authorization, concurrency, capacity, UI, and acceptance tests in section 17 pass.

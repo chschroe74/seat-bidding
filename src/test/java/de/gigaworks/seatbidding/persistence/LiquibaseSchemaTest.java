@@ -20,10 +20,10 @@ class LiquibaseSchemaTest {
         try (var connection = dataSource.getConnection();
              var statement = connection.prepareStatement(
                      "select count(*) from information_schema.tables where table_schema='public' and table_name in " +
-                             "('employee','account_activation','bidding_round','round_date','round_participation','bid','seat_assignment','round_allocation_audit','token_ledger')")) {
+                             "('employee','account_activation','bidding_round','round_date','round_participation','bid','seat_reservation','seat_assignment','round_allocation_audit','token_ledger')")) {
             try (var result = statement.executeQuery()) {
                 assertTrue(result.next());
-                assertEquals(9, result.getInt(1));
+                assertEquals(10, result.getInt(1));
             }
         }
         try (var connection = dataSource.getConnection();
@@ -38,7 +38,15 @@ class LiquibaseSchemaTest {
              var statement = connection.prepareStatement("select count(*) from databasechangelog")) {
             try (var result = statement.executeQuery()) {
                 assertTrue(result.next());
-                assertEquals(2, result.getInt(1));
+                assertEquals(3, result.getInt(1));
+            }
+        }
+        try (var connection = dataSource.getConnection();
+             var statement = connection.prepareStatement(
+                     "select count(*) from pg_constraint where conrelid='seat_reservation'::regclass and contype='c'")) {
+            try (var result = statement.executeQuery()) {
+                assertTrue(result.next());
+                assertEquals(3, result.getInt(1));
             }
         }
     }

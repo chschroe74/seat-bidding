@@ -16,6 +16,7 @@ public record BiddingContextResponse(
         Instant cutoffAt,
         String cutoffTimeZone,
         Instant serverTime,
+        int seatCapacity,
         int startingBalance,
         int bidTotal,
         int availableToBid,
@@ -24,9 +25,11 @@ public record BiddingContextResponse(
     public record DayBid(
             LocalDate date,
             DayOfWeek weekday,
-            int tokens) {
+            int tokens,
+            int reservedSeatCount,
+            int assignableSeatCapacity,
+            String reservationDescription) {
         
     }
     
 }
-

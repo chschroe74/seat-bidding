@@ -6,7 +6,7 @@
 
     <groupId>de.gigaworks</groupId>
     <artifactId>office-seat-bidding</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
+    <version>1.2.0</version>
     <name>Office Seat Bidding</name>
 
     <properties>

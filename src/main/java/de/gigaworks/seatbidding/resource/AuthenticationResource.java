@@ -67,7 +67,7 @@ public interface AuthenticationResource {
     @POST
     @Path("/logout")
     @Consumes(MediaType.WILDCARD)
-    @RolesAllowed("employee")
+    @RolesAllowed("USER")
     @SecurityRequirement(name = "formCookie")
     @Operation(summary = "Expire the current form-authentication cookie")
     @APIResponse(responseCode = "204")

@@ -5,14 +5,21 @@ import java.util.List;
 
 public final class RoundAllocation {
 
-    public static final String ALGORITHM_VERSION = "v2";
+    public static final String ALGORITHM_VERSION = "v3";
 
     private RoundAllocation() {
     }
 
     public record TargetDate(
             long dateId,
-            LocalDate targetDate) {
+            LocalDate targetDate,
+            Long reservationId,
+            int reservedSeatCount,
+            int assignableSeatCapacity) {
+
+        public TargetDate(long dateId, LocalDate targetDate) {
+            this(dateId, targetDate, null, 0, -1);
+        }
 
     }
 
@@ -46,6 +53,8 @@ public final class RoundAllocation {
     public record ClassifiedDate(
             long dateId,
             LocalDate targetDate,
+            Long reservationId,
+            int reservedSeatCount,
             int capacity,
             int unresolvedSeats,
             List<ClassifiedBid> bids) {

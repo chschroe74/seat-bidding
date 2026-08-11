@@ -1,0 +1,50 @@
+databaseChangeLog:
+  - changeSet:
+      id: 003-administrator-seat-reservations
+      author: chschroe
+      changes:
+        - addColumn:
+            tableName: employee
+            columns:
+              - column: { name: is_admin, type: boolean, defaultValueBoolean: false, constraints: { nullable: false } }
+
+        - createTable:
+            tableName: seat_reservation
+            columns:
+              - column: { name: id, type: bigint, autoIncrement: true, constraints: { primaryKey: true, primaryKeyName: pk_seat_reservation, nullable: false } }
+              - column: { name: target_date, type: date, constraints: { nullable: false } }
+              - column: { name: reserved_seat_count, type: integer, constraints: { nullable: false } }
+              - column: { name: description, type: varchar(500) }
+              - column: { name: created_by_employee_id, type: bigint, constraints: { nullable: false } }
+              - column: { name: created_at, type: timestamptz, defaultValueComputed: now(), constraints: { nullable: false } }
+        - addUniqueConstraint:
+            tableName: seat_reservation
+            columnNames: target_date
+            constraintName: uq_reservation_target_date
+        - addForeignKeyConstraint:
+            baseTableName: seat_reservation
+            baseColumnNames: created_by_employee_id
+            referencedTableName: employee
+            referencedColumnNames: id
+            constraintName: fk_reservation_employee
+        - createIndex:
+            tableName: seat_reservation
+            indexName: ix_reservation_employee
+            columns:
+              - column: { name: created_by_employee_id }
+
+        # Liquibase Community has no portable addCheckConstraint change.
+        - sql:
+            sql: |
+              ALTER TABLE seat_reservation
+                ADD CONSTRAINT ck_reservation_count CHECK (reserved_seat_count > 0),
+                ADD CONSTRAINT ck_reservation_weekday CHECK (extract(isodow from target_date) BETWEEN 1 AND 5),
+                ADD CONSTRAINT ck_reservation_description CHECK (
+                  description IS NULL OR (description = btrim(description) AND description <> '')
+                )
+      rollback:
+        - dropTable:
+            tableName: seat_reservation
+        - dropColumn:
+            tableName: employee
+            columnName: is_admin

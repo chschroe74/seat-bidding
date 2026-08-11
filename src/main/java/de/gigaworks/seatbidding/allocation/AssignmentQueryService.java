@@ -6,6 +6,7 @@ import de.gigaworks.seatbidding.exception.ApplicationProblem;
 import de.gigaworks.seatbidding.persistence.BiddingRoundRepository;
 import de.gigaworks.seatbidding.persistence.RoundDateRepository;
 import de.gigaworks.seatbidding.persistence.SeatAssignmentRepository;
+import de.gigaworks.seatbidding.persistence.SeatReservationRepository;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -25,6 +26,9 @@ public class AssignmentQueryService {
     
     @Inject
     SeatAssignmentRepository assignments;
+
+    @Inject
+    SeatReservationRepository reservations;
     
     @Transactional
     public AssignmentsResponse latest() {
@@ -43,8 +47,11 @@ public class AssignmentQueryService {
                         a.assigned, a.finalRank, employee.id.equals(current.id));
             }).toList();
             int assignedCount = (int) results.stream().filter(a -> a.assigned).count();
+            var reservation = reservations.findByTargetDate(day.targetDate).orElse(null);
+            int reserved = reservation == null ? 0 : reservation.reservedSeatCount;
             return new AssignmentsResponse.AssignmentDay(day.targetDate, day.targetDate.getDayOfWeek(),
-                    myStatus, assignedCount, participants);
+                    myStatus, assignedCount, reserved, round.seatCapacity - reserved,
+                    reservation == null ? null : reservation.description, participants);
         }).toList();
         return new AssignmentsResponse(round.id, round.status.name(), round.processedAt, round.seatCapacity, days);
     }

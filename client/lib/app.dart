@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'core/api_client.dart';
 import 'core/auth_service.dart';
 import 'features/assignments/assignments_screen.dart';
+import 'features/admin/seat_reservations_screen.dart';
 import 'features/auth/activation_code_screen.dart';
 import 'features/auth/create_password_screen.dart';
 import 'features/auth/login_screen.dart';
@@ -66,6 +67,12 @@ class _SeatBiddingAppState extends State<SeatBiddingApp> {
             path: '/help',
             builder: (context, state) => const HelpScreen(),
           ),
+          if (kIsWeb)
+            GoRoute(
+              path: '/admin/reservations',
+              builder: (context, state) =>
+                  SeatReservationAdminGate(auth: widget.auth, api: api),
+            ),
         ],
       ),
     ],
@@ -92,20 +99,32 @@ class AppShell extends StatelessWidget {
     required this.auth,
     required this.location,
     required this.child,
-  });
+    bool? isWeb,
+  }) : isWeb = isWeb ?? kIsWeb;
   final AuthService auth;
   final String location;
   final Widget child;
-  int get selected => location.startsWith('/bids') ? 1 : 0;
-  void navigate(BuildContext context, int index) =>
-      context.go(index == 0 ? '/assignments' : '/bids');
+  final bool isWeb;
+  int get selected => location.startsWith('/admin')
+      ? 2
+      : location.startsWith('/bids')
+      ? 1
+      : 0;
+  void navigate(BuildContext context, int index) => context.go(
+    index == 0
+        ? '/assignments'
+        : index == 1
+        ? '/bids'
+        : '/admin/reservations',
+  );
 
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
       final wide = constraints.maxWidth >= 800;
+      final showAdmin = wide && isWeb && auth.user?.isAdmin == true;
       final promotion =
-          kIsWeb &&
+          isWeb &&
           defaultTargetPlatform == TargetPlatform.android &&
           auth.configuration.androidDownloadUrl != null;
       return Scaffold(
@@ -154,18 +173,23 @@ class AppShell extends StatelessWidget {
             ? Row(
                 children: [
                   NavigationRail(
-                    selectedIndex: selected,
+                    selectedIndex: showAdmin || selected < 2 ? selected : 0,
                     onDestinationSelected: (index) => navigate(context, index),
                     labelType: NavigationRailLabelType.all,
-                    destinations: const [
-                      NavigationRailDestination(
+                    destinations: [
+                      const NavigationRailDestination(
                         icon: Icon(Icons.event_seat),
                         label: Text('Seat assignments'),
                       ),
-                      NavigationRailDestination(
+                      const NavigationRailDestination(
                         icon: Icon(Icons.gavel),
                         label: Text('Place bids'),
                       ),
+                      if (showAdmin)
+                        const NavigationRailDestination(
+                          icon: Icon(Icons.admin_panel_settings),
+                          label: Text('Admin'),
+                        ),
                     ],
                   ),
                   const VerticalDivider(width: 1),
@@ -176,7 +200,7 @@ class AppShell extends StatelessWidget {
         bottomNavigationBar: wide
             ? null
             : NavigationBar(
-                selectedIndex: selected,
+                selectedIndex: selected < 2 ? selected : 0,
                 onDestinationSelected: (index) => navigate(context, index),
                 destinations: const [
                   NavigationDestination(

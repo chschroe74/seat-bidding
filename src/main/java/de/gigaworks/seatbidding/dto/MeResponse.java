@@ -7,6 +7,7 @@ public record MeResponse(
         long id,
         String firstName,
         String lastName,
-        String email) {
+        String email,
+        boolean isAdmin) {
     
 }

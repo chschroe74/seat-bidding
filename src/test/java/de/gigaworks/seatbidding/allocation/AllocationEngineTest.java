@@ -165,6 +165,34 @@ class AllocationEngineTest {
         assertEquals(0, solution.objective().filledUnresolvedSlots());
     }
 
+    @Test
+    void scenarioRReservationReducesCapacityBeforeRankingAndChangesCanonicalInput() {
+        var bids = List.of(bid(0, 1, 1, 20), bid(0, 2, 2, 10), bid(0, 3, 3, 10), bid(0, 4, 4, 10));
+        var reservedDate = List.of(new RoundAllocation.TargetDate(100, MONDAY, 91L, 1, 3));
+        var reservationAware = solve(4, new IndexedSelector(0), reservedDate, bids);
+        var unreserved = solve(4, new IndexedSelector(0), dates(1), bids);
+
+        assertEquals(3, assigned(reservationAware).size());
+        assertEquals(4, assigned(unreserved).size());
+        assertNotEquals(reservationAware.inputFingerprint(), unreserved.inputFingerprint());
+        assertTrue(reservationAware.results().stream()
+                .allMatch(result -> RoundAllocation.ALGORITHM_VERSION.equals(result.algorithmVersion())));
+    }
+
+    @Test
+    void scenarioSAllPhysicalSeatsReservedProducesOnlyFixedLosers() {
+        var selector = new IndexedSelector(0);
+        var reservedDate = List.of(new RoundAllocation.TargetDate(100, MONDAY, 92L, 4, 0));
+        var solution = solve(4, selector, reservedDate,
+                List.of(bid(0, 1, 1, 20), bid(0, 2, 2, 10)));
+
+        assertTrue(assigned(solution).isEmpty());
+        assertEquals(0, solution.objective().filledUnresolvedSlots());
+        assertEquals(0, selector.invocations);
+        assertTrue(solution.results().stream()
+                .allMatch(result -> result.resolution() == AllocationResolution.FIXED_LOSER));
+    }
+
     private static RoundAllocation.Solution solve(int capacity, IndexedSelector selector,
             List<RoundAllocation.TargetDate> dates, List<RoundAllocation.Bid> bids) {
         var classifier = new BidRankingClassifier();

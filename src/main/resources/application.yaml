@@ -76,12 +76,12 @@ quarkus:
         rotate-on-boot: false
   smallrye-openapi:
     info-title: Office Seat Bidding API
-    info-version: 1.0.0
+    info-version: 1.2.0
   container-image:
     registry: ghcr.io
     group: chschroe74
     name: seat-bidding
-    tag: 1.1.0
+    tag: 1.2.0
     build: false
     push: false
   jib:
@@ -116,9 +116,15 @@ quarkus:
         public:
           paths: /api/public/*,/api/auth/csrf,/api/auth/start,/api/auth/activation/resend,/api/auth/activation/verify,/api/auth/activation/password,/q/health/*,/q/openapi,/q/swagger-ui/*
           policy: permit
+        admin:
+          paths: /api/admin/*
+          policy: admin
         api:
           paths: /api/*
           policy: authenticated
+      policy:
+        admin:
+          roles-allowed: ADMIN
     limits:
       max-body-size: 64K
   rest-csrf:

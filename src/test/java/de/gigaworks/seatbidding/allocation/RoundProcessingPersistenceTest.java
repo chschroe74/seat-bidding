@@ -16,6 +16,8 @@ import de.gigaworks.seatbidding.persistence.RoundParticipationEntity;
 import de.gigaworks.seatbidding.persistence.RoundParticipationRepository;
 import de.gigaworks.seatbidding.persistence.RoundStatus;
 import de.gigaworks.seatbidding.persistence.SeatAssignmentRepository;
+import de.gigaworks.seatbidding.persistence.SeatReservationEntity;
+import de.gigaworks.seatbidding.persistence.SeatReservationRepository;
 import de.gigaworks.seatbidding.persistence.TokenLedgerRepository;
 import de.gigaworks.seatbidding.round.RoundFactory;
 import io.quarkus.test.common.QuarkusTestResource;
@@ -36,6 +38,7 @@ class RoundProcessingPersistenceTest {
     @Inject RoundParticipationRepository participations;
     @Inject BidRepository bids;
     @Inject SeatAssignmentRepository assignments;
+    @Inject SeatReservationRepository reservations;
     @Inject RoundAllocationAuditRepository allocationAudits;
     @Inject TokenLedgerRepository ledger;
     @Inject RoundFactory roundFactory;
@@ -45,12 +48,12 @@ class RoundProcessingPersistenceTest {
     void boundaryTieChargesOnlyWinnersAndCreatesOneSuccessor() {
         QuarkusTransaction.requiringNew().run(() -> {
             var round = rounds.findOpen().orElseThrow();
-            round.seatCapacity = 2;
+            round.seatCapacity = 4;
             var now = Instant.now();
             round.biddingOpensAt = now.minusSeconds(7 * 24 * 60 * 60);
             round.cutoffAt = now.minusSeconds(1);
             var day = dates.findForRound(round.id).getFirst();
-            int[] amounts = {20, 10, 10};
+            int[] amounts = {20, 10, 10, 10};
             for (int i = 0; i < amounts.length; i++) {
                 var employee = new EmployeeEntity();
                 employee.email = "employee" + i + "@example.com";
@@ -59,6 +62,14 @@ class RoundProcessingPersistenceTest {
                 employee.enabled = true;
                 employees.persist(employee);
                 employees.flush();
+                if (i == 0) {
+                    var reservation = new SeatReservationEntity();
+                    reservation.targetDate = day.targetDate;
+                    reservation.reservedSeatCount = 1;
+                    reservation.description = "Customer workshop";
+                    reservation.createdBy = employee;
+                    reservations.persist(reservation);
+                }
                 RoundParticipationEntity participation = roundFactory.createParticipation(round, employee, 0, Instant.now());
                 participations.flush();
                 var bid = new BidEntity();
@@ -90,18 +101,18 @@ class RoundProcessingPersistenceTest {
             assertEquals(1, rounds.count("status", RoundStatus.OPEN));
             var day = dates.findForRound(completed.id).getFirst();
             var results = assignments.findForDate(day.id);
-            assertEquals(3, results.size());
-            assertEquals(2, results.stream().filter(a -> a.assigned).count());
+            assertEquals(4, results.size());
+            assertEquals(3, results.stream().filter(a -> a.assigned).count());
             assertTrue(results.stream().allMatch(a -> a.tokenRank >= 1));
-            assertTrue(results.stream().allMatch(a -> "v2".equals(a.algorithmVersion)));
+            assertTrue(results.stream().allMatch(a -> "v3".equals(a.algorithmVersion)));
             assertTrue(results.stream().allMatch(a -> a.drawValue == null && a.tieGroup == null));
-            assertEquals(2, ledger.count("round.id = ?1 and type = ?2", completed.id, LedgerType.BID_SPEND));
+            assertEquals(3, ledger.count("round.id = ?1 and type = ?2", completed.id, LedgerType.BID_SPEND));
             var audit = allocationAudits.findForRound(completed.id).orElseThrow();
-            assertEquals("v2", audit.algorithmVersion);
+            assertEquals("v3", audit.algorithmVersion);
             assertEquals(64, audit.inputFingerprint.length());
             assertEquals(64, audit.selectedSolutionFingerprint.length());
             assertNotNull(audit.randomSelectionValue);
-            assertTrue(audit.objectiveSummary.replace(" ", "").contains("\"filledUnresolvedSlots\":1"));
+            assertTrue(audit.objectiveSummary.replace(" ", "").contains("\"filledUnresolvedSlots\":2"));
 
             List<Integer> spends = new ArrayList<>();
             for (var participation : participations.findForRound(completed.id)) {
@@ -110,10 +121,10 @@ class RoundProcessingPersistenceTest {
                         .stream().mapToLong(entry -> entry.amount).sum();
                 assertEquals(participation.carriedOutTokens.longValue(), ledgerBalance);
             }
-            assertEquals(2, spends.stream().filter(value -> value > 0).count());
+            assertEquals(3, spends.stream().filter(value -> value > 0).count());
             assertEquals(20, spends.stream().mapToInt(Integer::intValue).max().orElseThrow());
             assertEquals(1, allocationAudits.count("round.id", completed.id));
-            assertEquals(3, assignments.count("roundDate.round.id", completed.id));
+            assertEquals(4, assignments.count("roundDate.round.id", completed.id));
         });
     }
 }

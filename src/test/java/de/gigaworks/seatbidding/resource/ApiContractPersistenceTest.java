@@ -7,20 +7,28 @@ import static org.hamcrest.Matchers.notNullValue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import de.gigaworks.seatbidding.auth.PasswordHasher;
 import de.gigaworks.seatbidding.persistence.AccountActivationRepository;
 import de.gigaworks.seatbidding.persistence.EmployeeEntity;
 import de.gigaworks.seatbidding.persistence.EmployeeRepository;
+import de.gigaworks.seatbidding.persistence.BiddingRoundRepository;
+import de.gigaworks.seatbidding.persistence.RoundDateRepository;
+import de.gigaworks.seatbidding.persistence.SeatReservationEntity;
+import de.gigaworks.seatbidding.persistence.SeatReservationRepository;
 import io.quarkus.mailer.MockMailbox;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.common.QuarkusTestResource;
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.http.ContentType;
+import io.restassured.path.json.JsonPath;
 import io.restassured.response.Response;
 import jakarta.inject.Inject;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.temporal.TemporalAdjusters;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
@@ -38,6 +46,9 @@ class ApiContractPersistenceTest {
     @Inject AccountActivationRepository activations;
     @Inject MockMailbox mailbox;
     @Inject PasswordHasher passwordHasher;
+    @Inject BiddingRoundRepository rounds;
+    @Inject RoundDateRepository roundDates;
+    @Inject SeatReservationRepository reservations;
 
     @BeforeEach
     void clearMailbox() {
@@ -50,8 +61,21 @@ class ApiContractPersistenceTest {
                 .header("Content-Security-Policy", containsString("script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'"))
                 .header("Content-Security-Policy", containsString("font-src 'self' data:"))
                 .body("apiBasePath", equalTo("/api"));
-        String document = given().get("/q/openapi").then().statusCode(200).extract().asString();
+        String document = given().accept(ContentType.JSON).get("/q/openapi")
+                .then().statusCode(200).extract().asString();
         assertTrue(document.contains("formCookie"));
+        var openApi = JsonPath.from(document);
+        assertEquals("1.2.0", openApi.getString("info.version"));
+        var schemas = openApi.getMap("components.schemas");
+        var biddingProperties = (Map<?, ?>) ((Map<?, ?>) schemas.get("BiddingContext")).get("properties");
+        assertTrue(biddingProperties.containsKey("seatCapacity"));
+        var dayProperties = schemas.entrySet().stream()
+                .filter(entry -> entry.getKey().toString().contains("DayBid"))
+                .map(entry -> (Map<?, ?>) ((Map<?, ?>) entry.getValue()).get("properties"))
+                .findFirst().orElseThrow();
+        assertTrue(dayProperties.containsKey("reservedSeatCount"));
+        assertTrue(dayProperties.containsKey("assignableSeatCapacity"));
+        assertTrue(dayProperties.containsKey("reservationDescription"));
         assertFalse(document.contains("androidSession"));
         assertFalse(document.toLowerCase().contains("bearerformat"));
     }
@@ -143,17 +167,47 @@ class ApiContractPersistenceTest {
         String session = login("bidder@example.com", PASSWORD, ORIGIN, true)
                 .then().statusCode(200).extract().detailedCookie("seat_session").getValue();
         Csrf csrf = csrf();
-        Response context = given().cookie("seat_session", session).get("/api/bidding/current")
-                .then().statusCode(200).extract().response();
-        long roundId = context.jsonPath().getLong("roundId");
-        String date = context.jsonPath().getString("days[0].date");
+        long reservationId = QuarkusTransaction.requiringNew().call(() -> {
+            var round = rounds.findOpen().orElseThrow();
+            var reservation = new SeatReservationEntity();
+            reservation.targetDate = roundDates.findForRound(round.id).getFirst().targetDate;
+            reservation.reservedSeatCount = 2;
+            reservation.description = "Customer workshop";
+            reservation.createdBy = employees.findByEmail("bidder@example.com").orElseThrow();
+            reservations.persist(reservation);
+            return reservation.id;
+        });
+        try {
+            Response context = given().cookie("seat_session", session).get("/api/bidding/current")
+                    .then().statusCode(200).extract().response();
+            long roundId = context.jsonPath().getLong("roundId");
+            int seatCapacity = context.jsonPath().getInt("seatCapacity");
+            int startingBalance = context.jsonPath().getInt("startingBalance");
+            String date = context.jsonPath().getString("days[0].date");
+            assertEquals(2, context.jsonPath().getInt("days[0].reservedSeatCount"));
+            assertEquals(seatCapacity - 2, context.jsonPath().getInt("days[0].assignableSeatCapacity"));
+            assertEquals("Customer workshop", context.jsonPath().getString("days[0].reservationDescription"));
+            assertEquals(0, context.jsonPath().getInt("days[1].reservedSeatCount"));
+            assertEquals(seatCapacity, context.jsonPath().getInt("days[1].assignableSeatCapacity"));
+            assertNull(context.jsonPath().get("days[1].reservationDescription"));
 
-        putJsonWithSession("/api/bidding/current/bids",
-                Map.of("roundId", roundId, "bids", List.of(Map.of("date", date, "tokens", 5))), csrf, session)
-                .then().statusCode(200).body("bidTotal", equalTo(5));
-        putJsonWithSession("/api/bidding/current/bids",
-                Map.of("roundId", roundId, "bids", List.of(Map.of("date", date, "tokens", 7))), csrf, session)
-                .then().statusCode(200).body("bidTotal", equalTo(7));
+            putJsonWithSession("/api/bidding/current/bids",
+                    Map.of("roundId", roundId, "bids", List.of(Map.of("date", date, "tokens", 5))), csrf, session)
+                    .then().statusCode(200).body("bidTotal", equalTo(5))
+                    .body("availableToBid", equalTo(startingBalance - 5))
+                    .body("seatCapacity", equalTo(seatCapacity))
+                    .body("days[0].reservedSeatCount", equalTo(2))
+                    .body("days[0].assignableSeatCapacity", equalTo(seatCapacity - 2))
+                    .body("days[0].reservationDescription", equalTo("Customer workshop"));
+            putJsonWithSession("/api/bidding/current/bids",
+                    Map.of("roundId", roundId, "bids", List.of(Map.of("date", date, "tokens", 7))), csrf, session)
+                    .then().statusCode(200).body("bidTotal", equalTo(7))
+                    .body("availableToBid", equalTo(startingBalance - 7))
+                    .body("days[0].reservedSeatCount", equalTo(2));
+        }
+        finally {
+            QuarkusTransaction.requiringNew().run(() -> reservations.deleteById(reservationId));
+        }
     }
 
     @Test
@@ -216,6 +270,124 @@ class ApiContractPersistenceTest {
         });
     }
 
+    @Test
+    void administratorRolesCurrentFlagAndReservationCrudAreEnforced() {
+        provision("admin@example.com", true, PASSWORD, true);
+        provision("ordinary@example.com", true, PASSWORD, false);
+        String adminSession = login("admin@example.com", PASSWORD, ORIGIN, true)
+                .then().statusCode(200).extract().detailedCookie("seat_session").getValue();
+        String userSession = login("ordinary@example.com", PASSWORD, ORIGIN, true)
+                .then().statusCode(200).extract().detailedCookie("seat_session").getValue();
+        var date = futureMonday(20);
+        var csrf = csrf();
+
+        given().cookie("seat_session", adminSession).get("/api/me").then().statusCode(200)
+                .body("isAdmin", equalTo(true));
+        given().cookie("seat_session", adminSession)
+                .queryParam("from", date.toString()).queryParam("to", date.toString())
+                .get("/api/admin/seat-reservations").then().statusCode(200);
+        given().cookie("seat_session", userSession)
+                .queryParam("from", date.toString()).queryParam("to", date.toString())
+                .get("/api/admin/seat-reservations").then().statusCode(403);
+
+        var created = postJsonWithSession("/api/admin/seat-reservations",
+                Map.of("date", date.toString(), "reservedSeatCount", 2, "description", "  Customer workshop  "),
+                csrf, adminSession).then().statusCode(201)
+                .header("Location", containsString("/api/admin/seat-reservations/"))
+                .body("description", equalTo("Customer workshop"))
+                .body("reservedSeatCount", equalTo(2)).extract().response();
+        long reservationId = created.jsonPath().getLong("id");
+
+        given().cookie("seat_session", adminSession)
+                .queryParam("from", date.toString()).queryParam("to", date.toString())
+                .get("/api/admin/seat-reservations").then().statusCode(200)
+                .body("reservations.size()", equalTo(1)).body("reservations[0].id", equalTo((int) reservationId));
+        postJsonWithSession("/api/admin/seat-reservations",
+                Map.of("date", date.toString(), "reservedSeatCount", 1), csrf, adminSession)
+                .then().statusCode(409).body("code", equalTo("RESERVATION_ALREADY_EXISTS"));
+        deleteWithSession("/api/admin/seat-reservations/99999999", csrf, adminSession)
+                .then().statusCode(404).body("code", equalTo("RESERVATION_NOT_FOUND"));
+        deleteWithSession("/api/admin/seat-reservations/" + reservationId, csrf, adminSession)
+                .then().statusCode(204);
+    }
+
+    @Test
+    void staleAdministratorCookieIsBlockedAndFreshLoginPicksUpAGrant() {
+        provision("stale-admin@example.com", true, PASSWORD, true);
+        provision("new-admin@example.com", true, PASSWORD, false);
+        String staleSession = login("stale-admin@example.com", PASSWORD, ORIGIN, true)
+                .then().statusCode(200).extract().detailedCookie("seat_session").getValue();
+        login("new-admin@example.com", PASSWORD, ORIGIN, true).then().statusCode(200);
+        QuarkusTransaction.requiringNew().run(() -> {
+            employees.findByEmail("stale-admin@example.com").orElseThrow().admin = false;
+            employees.findByEmail("new-admin@example.com").orElseThrow().admin = true;
+        });
+        var date = futureMonday(24);
+
+        given().cookie("seat_session", staleSession).get("/api/me").then().statusCode(200)
+                .body("isAdmin", equalTo(false));
+        given().cookie("seat_session", staleSession)
+                .queryParam("from", date.toString()).queryParam("to", date.toString())
+                .get("/api/admin/seat-reservations").then().statusCode(403);
+        String freshSession = login("new-admin@example.com", PASSWORD, ORIGIN, true)
+                .then().statusCode(200).extract().detailedCookie("seat_session").getValue();
+        given().cookie("seat_session", freshSession)
+                .queryParam("from", date.toString()).queryParam("to", date.toString())
+                .get("/api/admin/seat-reservations").then().statusCode(200);
+    }
+
+    @Test
+    void reservationValidationCoversRangeDateCountCapacityAndDescription() {
+        provision("validation-admin@example.com", true, PASSWORD, true);
+        String session = login("validation-admin@example.com", PASSWORD, ORIGIN, true)
+                .then().statusCode(200).extract().detailedCookie("seat_session").getValue();
+        var csrf = csrf();
+        var monday = futureMonday(28);
+
+        given().cookie("seat_session", session).queryParam("from", monday.plusDays(1).toString())
+                .queryParam("to", monday.toString()).get("/api/admin/seat-reservations")
+                .then().statusCode(400).body("code", equalTo("RESERVATION_RANGE_INVALID"));
+        given().cookie("seat_session", session).queryParam("from", monday.toString())
+                .queryParam("to", monday.plusDays(366).toString()).get("/api/admin/seat-reservations")
+                .then().statusCode(400).body("code", equalTo("RESERVATION_RANGE_INVALID"));
+        postJsonWithSession("/api/admin/seat-reservations",
+                Map.of("date", monday.plusDays(5).toString(), "reservedSeatCount", 1), csrf, session)
+                .then().statusCode(400).body("code", equalTo("RESERVATION_DATE_INVALID"));
+        postJsonWithSession("/api/admin/seat-reservations",
+                Map.of("date", monday.toString(), "reservedSeatCount", 0), csrf, session)
+                .then().statusCode(400).body("code", equalTo("VALIDATION_FAILED"));
+        postJsonWithSession("/api/admin/seat-reservations",
+                Map.of("date", monday.toString(), "reservedSeatCount", 10), csrf, session)
+                .then().statusCode(400).body("code", equalTo("RESERVATION_CAPACITY_EXCEEDED"));
+        postJsonWithSession("/api/admin/seat-reservations",
+                Map.of("date", monday.toString(), "reservedSeatCount", 1, "description", "x".repeat(501)),
+                csrf, session).then().statusCode(400).body("code", equalTo("RESERVATION_DESCRIPTION_INVALID"));
+    }
+
+    @Test
+    void reservationCannotBeDeletedAfterItsRoundCutoff() {
+        provision("cutoff-admin@example.com", true, PASSWORD, true);
+        String session = login("cutoff-admin@example.com", PASSWORD, ORIGIN, true)
+                .then().statusCode(200).extract().detailedCookie("seat_session").getValue();
+        var csrf = csrf();
+        String date = QuarkusTransaction.requiringNew().call(() ->
+                roundDates.findForRound(rounds.findOpen().orElseThrow().id).getFirst().targetDate.toString());
+        long reservationId = postJsonWithSession("/api/admin/seat-reservations",
+                Map.of("date", date, "reservedSeatCount", 1), csrf, session)
+                .then().statusCode(201).extract().jsonPath().getLong("id");
+        Instant originalCutoff = QuarkusTransaction.requiringNew().call(() -> {
+            var round = rounds.findOpen().orElseThrow();
+            var value = round.cutoffAt;
+            round.cutoffAt = Instant.now().minusSeconds(1);
+            return value;
+        });
+        deleteWithSession("/api/admin/seat-reservations/" + reservationId, csrf, session)
+                .then().statusCode(409).body("code", equalTo("RESERVATION_IMMUTABLE"));
+        QuarkusTransaction.requiringNew().run(() -> rounds.findOpen().orElseThrow().cutoffAt = originalCutoff);
+        deleteWithSession("/api/admin/seat-reservations/" + reservationId, csrf, session)
+                .then().statusCode(204);
+    }
+
     private Csrf csrf() {
         Response response = given().get("/api/auth/csrf").then().statusCode(204).extract().response();
         return new Csrf(response.getDetailedCookie("csrf-token").getValue(), response.header("X-CSRF-TOKEN"));
@@ -236,9 +408,20 @@ class ApiContractPersistenceTest {
                 .header("X-CSRF-TOKEN", csrf.token).contentType(ContentType.JSON).body(body).put(path);
     }
 
+    private Response postJsonWithSession(String path, Object body, Csrf csrf, String session) {
+        return given().cookie("csrf-token", csrf.cookie).cookie("seat_session", session)
+                .header("X-CSRF-TOKEN", csrf.token).contentType(ContentType.JSON).body(body).post(path);
+    }
+
+    private Response deleteWithSession(String path, Csrf csrf, String session) {
+        return given().cookie("csrf-token", csrf.cookie).cookie("seat_session", session)
+                .header("X-CSRF-TOKEN", csrf.token).delete(path);
+    }
+
     private Response login(String email, String password, String origin, boolean includeOrigin) {
         var request = given().contentType(ContentType.URLENC).formParam("j_username", email)
                 .formParam("j_password", password).header("X-Forwarded-Proto", "https")
+                .header("X-Forwarded-For", sourceFor(email))
                 .redirects().follow(false);
         if (includeOrigin) request.header("Origin", origin);
         return request.post("/j_security_check");
@@ -247,6 +430,7 @@ class ApiContractPersistenceTest {
     private Response loginWithReferer(String email, String password, String referer) {
         return given().contentType(ContentType.URLENC).header("Referer", referer)
                 .header("X-Forwarded-Proto", "https")
+                .header("X-Forwarded-For", sourceFor(email))
                 .formParam("j_username", email).formParam("j_password", password)
                 .redirects().follow(false).post("/j_security_check");
     }
@@ -270,6 +454,10 @@ class ApiContractPersistenceTest {
     }
 
     private void provision(String email, boolean enabled, String password) {
+        provision(email, enabled, password, false);
+    }
+
+    private void provision(String email, boolean enabled, String password, boolean admin) {
         QuarkusTransaction.requiringNew().run(() -> {
             if (employees.findByEmail(email).isPresent()) return;
             var employee = new EmployeeEntity();
@@ -277,12 +465,21 @@ class ApiContractPersistenceTest {
             employee.firstName = "Test";
             employee.lastName = "Employee";
             employee.enabled = enabled;
+            employee.admin = admin;
             if (password != null) {
                 employee.passwordHash = passwordHasher.hash(password);
                 employee.passwordSetAt = Instant.now();
             }
             employees.persist(employee);
         });
+    }
+
+    private static LocalDate futureMonday(int weeks) {
+        return LocalDate.now().plusWeeks(weeks).with(TemporalAdjusters.nextOrSame(java.time.DayOfWeek.MONDAY));
+    }
+
+    private static String sourceFor(String email) {
+        return "192.0.2." + (Math.floorMod(email.hashCode(), 200) + 1);
     }
 
     private record Csrf(String cookie, String token) {}
