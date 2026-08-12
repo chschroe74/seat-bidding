@@ -32,18 +32,24 @@ void main() {
 
       expect(find.text('Seat reservations'), findsOneWidget);
       expect(find.text('Add reservation'), findsNWidgets(2));
-      await tester.enterText(
-        find.widgetWithText(TextField, 'Date (YYYY-MM-DD)'),
-        '2030-01-07',
+      final dateField = find.widgetWithText(TextField, 'Date (YYYY-MM-DD)');
+      final countField = find.widgetWithText(TextField, 'Reserved seats');
+      final descriptionField = find.widgetWithText(
+        TextField,
+        'Description (optional)',
       );
-      await tester.enterText(
-        find.widgetWithText(TextField, 'Reserved seats'),
-        '2',
+      expect(tester.getTopLeft(dateField).dy, tester.getTopLeft(countField).dy);
+      expect(
+        tester.getTopLeft(dateField).dy,
+        tester.getTopLeft(descriptionField).dy,
       );
-      await tester.enterText(
-        find.widgetWithText(TextField, 'Description (optional)'),
-        'Workshop',
+      expect(
+        tester.getTopLeft(descriptionField).dx,
+        greaterThan(tester.getTopLeft(countField).dx),
       );
+      await tester.enterText(dateField, '2030-01-07');
+      await tester.enterText(countField, '2');
+      await tester.enterText(descriptionField, 'Workshop');
       await tester.tap(find.widgetWithText(FilledButton, 'Add reservation'));
       await tester.pumpAndSettle();
 

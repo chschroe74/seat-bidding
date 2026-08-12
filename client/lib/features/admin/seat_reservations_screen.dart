@@ -199,10 +199,8 @@ class _SeatReservationsScreenState extends State<SeatReservationsScreen> {
       const SizedBox(height: 16),
       Text('Add reservation', style: Theme.of(context).textTheme.titleLarge),
       const SizedBox(height: 8),
-      Wrap(
-        spacing: 12,
-        runSpacing: 12,
-        crossAxisAlignment: WrapCrossAlignment.center,
+      Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
             width: 210,
@@ -218,6 +216,7 @@ class _SeatReservationsScreenState extends State<SeatReservationsScreen> {
               ),
             ),
           ),
+          const SizedBox(width: 16),
           SizedBox(
             width: 220,
             child: TextField(
@@ -229,18 +228,21 @@ class _SeatReservationsScreenState extends State<SeatReservationsScreen> {
               ),
             ),
           ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: TextField(
+              controller: description,
+              maxLength: 500,
+              decoration: const InputDecoration(
+                labelText: 'Description (optional)',
+                helperText:
+                    'Visible to all authenticated users. Plain text only.',
+              ),
+            ),
+          ),
         ],
       ),
       const SizedBox(height: 12),
-      TextField(
-        controller: description,
-        maxLength: 500,
-        maxLines: 2,
-        decoration: const InputDecoration(
-          labelText: 'Description (optional)',
-          helperText: 'Visible to all authenticated users. Plain text only.',
-        ),
-      ),
       Align(
         alignment: Alignment.centerLeft,
         child: FilledButton.icon(
