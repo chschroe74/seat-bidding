@@ -29,17 +29,38 @@ void main() {
         await tester.pumpAndSettle();
 
         expect(find.text('Full day'), findsNWidgets(2));
+        expect(find.byIcon(Icons.calendar_today_outlined), findsNWidgets(2));
+        final tokenField = find.byType(TextField).first;
+        final tokenPosition = tester.getTopLeft(tokenField);
+        final initialSize = tester.getSize(
+            find.byKey(Key('attendance-period-${monday.toIso8601String()}')),
+        );
         await tester.tap(
             find.byKey(Key('attendance-period-${monday.toIso8601String()}')),
         );
-        await tester.pump();
+        await tester.pumpAndSettle();
         expect(find.text('Morning'), findsOneWidget);
         expect(find.text('Full day'), findsOneWidget);
+        expect(find.byIcon(Icons.wb_twilight_outlined), findsOneWidget);
+        expect(tester.getTopLeft(tokenField), tokenPosition);
+        expect(
+            tester.getSize(
+                find.byKey(Key('attendance-period-${monday.toIso8601String()}')),
+            ),
+            initialSize,
+        );
         await tester.tap(
             find.byKey(Key('attendance-period-${monday.toIso8601String()}')),
         );
-        await tester.pump();
+        await tester.pumpAndSettle();
         expect(find.text('Afternoon'), findsOneWidget);
+        expect(find.byIcon(Icons.light_mode_outlined), findsOneWidget);
+        expect(tester.widget<TextField>(tokenField).controller!.text, isEmpty);
+        await tester.tap(
+            find.byKey(Key('attendance-period-${monday.toIso8601String()}')),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('Full day'), findsNWidgets(2));
     });
 
     testWidgets('Clear empties the bid fields without saving', (tester) async {
@@ -78,6 +99,11 @@ void main() {
             tester.widget<TextField>(find.byType(TextField).last).controller!.text,
             '2',
         );
+        await tester.tap(
+            find.byKey(Key('attendance-period-${monday.toIso8601String()}')),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('Morning'), findsOneWidget);
 
         final clearButton = find.byKey(const Key('clear-bids'));
         await tester.scrollUntilVisible(
@@ -105,6 +131,7 @@ void main() {
             find.text('Bids cleared locally. Select Save bids to apply this change.'),
             findsOneWidget,
         );
+        expect(find.text('Full day'), findsNWidgets(2));
         expect(api.saveCalls, 0);
     });
 
@@ -206,6 +233,10 @@ void main() {
             ),
         );
         await tester.pumpAndSettle();
+        await tester.tap(
+            find.byKey(Key('attendance-period-${monday.toIso8601String()}')),
+        );
+        await tester.pumpAndSettle();
         await tester.enterText(find.byType(TextField), '3');
         final save = find.text('Save bids');
         await tester.scrollUntilVisible(
@@ -223,6 +254,10 @@ void main() {
         await tester.pumpAndSettle();
 
         expect(api.saveCalls, 1);
+        expect(
+            api.lastAttendancePeriods?[monday],
+            AttendancePeriod.morningOnly,
+        );
         expect(find.text('2 reserved'), findsOneWidget);
         expect(find.text('Training day'), findsOneWidget);
         expect(find.text('Bids saved.'), findsOneWidget);
@@ -254,6 +289,10 @@ void main() {
             ),
         );
         await tester.pumpAndSettle();
+        await tester.tap(
+            find.byKey(Key('attendance-period-${monday.toIso8601String()}')),
+        );
+        await tester.pumpAndSettle();
         await tester.enterText(find.byType(TextField), '3');
         tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
         tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
@@ -268,6 +307,8 @@ void main() {
             tester.widget<TextField>(find.byType(TextField)).controller!.text,
             '3',
         );
+        expect(find.text('Morning'), findsOneWidget);
+        expect(find.byIcon(Icons.wb_twilight_outlined), findsOneWidget);
         expect(find.text('2 reserved'), findsOneWidget);
         expect(
             find.text(
@@ -409,6 +450,7 @@ class _FakeApi extends ApiClient {
     Object? saveError;
     int saveCalls = 0;
     int loadCalls = 0;
+    Map<DateTime, AttendancePeriod>? lastAttendancePeriods;
 
     @override
     Future<BiddingContext> currentBidding() async {
@@ -424,6 +466,9 @@ class _FakeApi extends ApiClient {
         Map<DateTime, AttendancePeriod>? attendancePeriods,
     ]) async {
         saveCalls++;
+        lastAttendancePeriods = attendancePeriods == null
+                ? null
+                : Map.of(attendancePeriods);
         if (saveError != null) throw saveError!;
         return saveResult ?? biddingContext;
     }

@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 import 'package:go_router/go_router.dart';
 import '../../core/api_client.dart';
 import '../../core/models.dart';
+import 'attendance_period_control.dart';
 import 'bid_draft.dart';
 
 class BidsScreen extends StatefulWidget {
@@ -384,21 +385,12 @@ class _BidsScreenState extends State<BidsScreen> with WidgetsBindingObserver {
                                                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
                                                 child: Align(
                                                     alignment: Alignment.centerLeft,
-                                                    child: Semantics(
-                                                        button: true,
-                                                        label:
-                                                                'Attendance for ${DateFormat.EEEE().format(day.date)}: ${draft!.attendancePeriods[day.date]!.label}. Activate to change.',
-                                                        child: ActionChip(
-                                                            key: Key(
-                                                                'attendance-period-${day.date.toIso8601String()}',
-                                                            ),
-                                                            avatar: const Icon(Icons.schedule, size: 18),
-                                                            label: Text(
-                                                                draft!.attendancePeriods[day.date]!.label,
-                                                            ),
-                                                            tooltip: 'Change attendance period',
-                                                            onPressed: () => cycleAttendance(day.date),
+                                                    child: AttendancePeriodControl(
+                                                        key: Key(
+                                                            'attendance-period-${day.date.toIso8601String()}',
                                                         ),
+                                                        period: draft!.attendancePeriods[day.date]!,
+                                                        onChanged: () => cycleAttendance(day.date),
                                                     ),
                                                 ),
                                             ),

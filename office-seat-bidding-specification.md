@@ -1183,7 +1183,7 @@ Collapsed/expanded state is local UI state. Loading, empty/bootstrap, processing
 The view displays:
 
 - all five next-round weekdays and `dd/MM` dates;
-- one accessible attendance badge/control per date, initially `Full day`, cycling independently through `Full day` → `Morning` → `Afternoon` → `Full day`;
+- one accessible attendance badge/control per date, initially `Full day`, cycling independently through `Full day` → `Morning` → `Afternoon` → `Full day`; each state always combines a visible text label with a distinct semantic icon, while theme-derived background/foreground colors distinguish full-day from half-day attendance;
 - each date's read-only reserved-seat count and assignable capacity, with a clear badge/label when the reserved count is positive;
 - the public reservation description beneath the affected date when present;
 - authoritative starting balance, current bid total, and amount still available to bid;
@@ -1197,6 +1197,9 @@ Draft behavior:
 
 - Existing saved bids load into fields.
 - The attendance control works by tap/click, keyboard, and screen reader; its current value and cycling behavior are announced and never communicated by color alone.
+- `Full day` uses a calendar/full-day icon and the theme's primary-container/on-primary-container color pair. `Morning` uses a sunrise icon, and `Afternoon` uses a daytime/afternoon-sun icon; both half-day states use the same tertiary-container/on-tertiary-container color pair so color communicates the shared half-day category while icon and text communicate the period. Suitable Material examples are `calendar_today_outlined`, `wb_twilight_outlined`, and `light_mode_outlined`; an equivalent icon available in the project's Flutter version MAY be substituted without changing the semantics.
+- The icon never replaces the text. The badge has a stable minimum width and alignment so cycling does not shift surrounding controls. Icon/color changes use a short, non-disruptive animation that respects reduced-motion/platform accessibility behavior.
+- Desktop/web provides a tooltip such as **Change attendance period**. Accessibility semantics expose label **Attendance period**, the current value, button/toggle behavior, and a hint naming the next state in the cycle. Keyboard focus is clearly visible independently of the state background.
 - Changing a period affects only that date. It neither changes token input nor causes an immediate server write.
 - A zero-token draft may retain a locally selected period, but saving zero persists no bid/period; reloading that date returns to `Full day`.
 - Reservation information is never editable from the bidding page and is visually distinct from bid inputs. It is shown to ordinary users and administrators on every supported platform, including Android.
@@ -1296,6 +1299,7 @@ When the PWA detects an Android browser, it MAY show **Get the Android app** in 
 
 - Support keyboard navigation, screen readers, scalable text, touch targets, focus indicators, and WCAG AA contrast.
 - Never communicate status by color alone.
+- Theme-derived attendance-control foreground/background pairs MUST retain WCAG AA contrast in light, dark, high-contrast, hover, pressed, disabled, and focused states. Icons, persistent text, and semantics remain understandable without color perception or animation.
 - Dates are presented as agreed (`dd/MM`) while weekday labels and prose are localizable.
 - Store/transport no locale-specific numeric formats; token values are integers.
 
@@ -1608,7 +1612,7 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 - Widget/golden tests for all assignment colors, today marker, reservation information, assignable-capacity boundary, and responsive layouts.
 - Bid balance, spinner states, carry-over explanation, integer division/remainder, zero behavior, and disabled save.
 - Bidding-page reservation badges/counts, assignable capacity, public description, read-only behavior, all-platform visibility, refresh after save/resume, and preservation of an unsaved draft during same-round metadata refresh.
-- Independent three-state attendance controls: initial/load state, tap cycle, keyboard/screen-reader operation, no color-only state, zero-save reset, period preservation through auto-distribution/save/refresh, and unsaved-change handling.
+- Independent three-state attendance controls: initial/load state, tap cycle, keyboard/screen-reader operation, calendar/sunrise/afternoon icon mapping, full-day versus shared half-day theme colors, visible text in every state, stable sizing, tooltip, next-state hint, focus and contrast, reduced-motion-safe transition, no color-only state, zero-save reset, period preservation through auto-distribution/save/refresh, and unsaved-change handling. Widget/golden coverage includes light and dark themes and compact/wide layouts.
 - Navigation by tap, keyboard, and swipe; unsaved-change handling.
 - Email-first login branching, password login, pending-code resume, resend cooldown, code verification, password requirements/confirmation, automatic form login after password creation, persistent-cookie restoration, inactivity expiry, CSRF recovery, logout, and generic authentication error states.
 - Settings navigation and synchronized reminder controls appear in wide and compact PWA layouts; disabled state hides subordinate controls, enabled state shows weekday/schedule/device management, and Android promotion remains limited to eligible PWA contexts.
@@ -1642,7 +1646,7 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 19. With every physical seat reserved, all positive bidders are unsuccessful, no bid is charged, and the published day clearly shows zero assignable capacity.
 20. After `is_admin` is removed directly in the database, an admin mutation using a previously issued role-bearing cookie is rejected by the mandatory database recheck. No application endpoint can restore the role.
 21. Before placing bids, every employee sees that a date with physical capacity 12 has two reserved seats, ten assignable seats, and the public reservation description. The information is read-only, appears in the bidding context on PWA and Android, does not alter token availability, and remains visible in the published assignment card after processing.
-22. A new bidding draft shows `Full day` on every date. Toggling Monday twice yields `Afternoon` without changing Tuesday or any tokens. Saving a positive bid persists that period; auto-distribution does not alter it.
+22. A new bidding draft shows `Full day` with a calendar icon and primary-container styling on every date. Toggling Monday once shows `Morning` with a sunrise icon and shared half-day styling; toggling it again shows `Afternoon` with an afternoon-sun icon and the same half-day styling, without changing Tuesday or any tokens. Every state retains its text, stable layout, keyboard focus, and announced value/next action. Saving a positive bid persists the period; auto-distribution does not alter it.
 23. Morning bids `100, 50` and afternoon bids `40, 10` form two units scoring `110` and `90`. If both units win, all four employees are assigned, two physical seats are occupied, and each employee pays only their individual bid.
 24. With morning bids `30, 20, 10` and two afternoon bids, the `30` and `20` morning bids pair while the `10` morning bid remains an eligible single. It is not automatically rejected for lacking a partner.
 25. A half-day pair tied at the capacity boundary is handled as one indivisible unit. The selected global solution assigns both pair members or neither; individual charging follows that outcome.
@@ -1716,6 +1720,6 @@ Allocation completion requires individual token authority during pairing selecti
 
 The administration extension is complete when `is_admin` is manually maintainable but never application-manageable; backend authorization and current-database revalidation protect every admin operation; a newly numbered Liquibase migration preserves the deployed schema/data; desktop PWA admins can list, create, and delete valid reservations; compact web, ordinary users, and Android expose no management UI; cutoff makes reservations immutable; allocation uses reservation-derived assignable capacity; every employee sees read-only reservation counts, assignable capacity, and descriptions while bidding; published assignments show the same reservation information; and all migration, authorization, concurrency, capacity, UI, and acceptance tests in section 17 pass.
 
-The half-day extension is complete when independent accessible three-state controls round-trip through the API; deployed data migrates to full-day single units without historical changes; pairing, unit ranking, fairness, persistence, display, and charging satisfy sections 5–9; paired members are grouped with badges and individual bids; occupied seats are distinguished from assigned employees; and every half-day, integration, contract, Flutter, migration, and acceptance test in section 17 passes.
+The half-day extension is complete when independent accessible three-state controls round-trip through the API; their persistent labels, semantic icons, theme-derived full-day/half-day colors, stable sizing, focus, tooltip, contrast, animation, and screen-reader behavior satisfy section 13; deployed data migrates to full-day single units without historical changes; pairing, unit ranking, fairness, persistence, display, and charging satisfy sections 5–9; paired members are grouped with badges and individual bids; occupied seats are distinguished from assigned employees; and every half-day, integration, contract, Flutter, migration, and acceptance test in section 17 passes.
 
 The Web Push extension is complete when notification preferences are disabled by default and synchronize across clients; Monday–Friday start-day behavior, positive-bid completion, immutable round suppression, retained global-disable subscriptions, and multi-device delivery satisfy sections 5–14; the normal Quarkus job runs once per configured trigger in the shared business zone without polling/catch-up; subscription secrets and outbound endpoints are secured; iOS Home Screen, Android web, desktop, permission, service-worker, action/fallback, and safe deep-link flows work as specified; new changesets append after rather than modify the committed half-day work; fake-transport PostgreSQL tests cover dispatch idempotency and failure isolation; and all notification acceptance scenarios in section 17 pass.
