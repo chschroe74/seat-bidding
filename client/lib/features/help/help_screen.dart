@@ -36,8 +36,12 @@ class HelpScreen extends StatelessWidget {
                 'Your encrypted sign-in cookie normally remains active across restarts and expires after inactivity. Log out from the menu to remove it from this device.',
             ),
             _Help(
-                'Android reminders',
-                'The optional native Android app can schedule device-local bidding reminders. The web app does not schedule reminders.',
+                'Bid reminders',
+                'Bid reminders are an account preference in Settings. Choose Monday through Friday as the first reminder day, then explicitly enable notifications on each web device that should receive them. Saving at least one positive bid stops reminders; an all-zero bid set does not. Disabling reminders keeps your weekday and registered devices. You can also permanently skip reminders for the current round after confirmation; they resume for the next round when globally enabled. Delivery is best effort.',
+            ),
+            _Help(
+                'Web Push on your devices',
+                'On iPhone or iPad, add the web app to the Home Screen, open it there, and enable notifications from Settings. Compatible Android and desktop browsers can enroll directly; the native Android app is not required. Browser or system permission may still block delivery. You can register several web devices and remove them individually.',
             ),
         ],
     );

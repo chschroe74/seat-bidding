@@ -65,11 +65,17 @@ The packaged application uses `application-prod.yaml` plus shared `application.y
 - Browser policy: `AUTH_ALLOWED_WEB_ORIGINS` as exact HTTPS origins
 - Optional tuning: activation limits, form-cookie timeout/renewal/max-age, rate limits, Argon2id parameters, and `PASSWORD_BLOCKLIST_RESOURCE`
 - Round defaults: `TOKENS_PER_ROUND` defaults to `60`; `CARRY_OVER_CAP` defaults to `24`
+- Shared scheduling: `SEAT_BIDDING_TIME_ZONE` defaults to `Europe/Berlin`; `SEAT_ASSIGNMENT_CRON` and `SEAT_ASSIGNMENT_SCHEDULER_ENABLED` control Friday allocation; `BID_REMINDER_CRON` and `BID_REMINDER_SCHEDULER_ENABLED` control the single weekday reminder trigger
+- Web Push: `WEB_PUSH_VAPID_SUBJECT`, `WEB_PUSH_VAPID_PUBLIC_KEY`, and secret `WEB_PUSH_VAPID_PRIVATE_KEY` are required; optional `WEB_PUSH_TTL`, `WEB_PUSH_CONNECT_TIMEOUT`, and `WEB_PUSH_REQUEST_TIMEOUT` tune delivery
 - Reverse proxy: set `PROXY_ADDRESS_FORWARDING=true` only when forwarded headers come from a trusted proxy configuration
 
 TLS terminates at the reverse proxy/platform boundary. Keep the application private behind that boundary, mount `/logs` when `LOG_TO_FILE=true`, and rotate SMTP and authentication secrets through the deployment secret store. Rotating the CSRF signature key invalidates current CSRF proofs, rotating the activation pepper invalidates pending activation codes, and rotating the form-session encryption key invalidates all authentication cookies. With signing enabled, Quarkus returns the random header token in `X-CSRF-TOKEN` from `GET /api/auth/csrf`; the readable cookie contains its HMAC signature and is deliberately a different value.
 
 The bundled `password-blocklist.txt` is a versioned operational asset. Update it through normal source review from a trusted local compromise/common-password source; candidate passwords must never be sent to an external service.
+
+Generate one P-256 VAPID key pair with a trusted Web Push key-generation tool and keep it stable across deployments. Supply the unpadded base64url public application-server key as `WEB_PUSH_VAPID_PUBLIC_KEY`; store the matching private scalar only in the deployment secret store as `WEB_PUSH_VAPID_PRIVATE_KEY`. `WEB_PUSH_VAPID_SUBJECT` must be a monitored `mailto:` URI or an HTTPS contact URL. Rotating the pair makes existing browser subscriptions unusable and requires users to enroll those devices again. The fixed development/test pair is non-production fixture data and both schedulers are disabled in the test profile.
+
+Bid reminders use standards-based Web Push and do not require an open tab, the native Android application, or a local alarm. The default trigger is 10:00 Monday through Friday in the shared business time zone. Missed triggers are deliberately not replayed. Accepted provider responses are recorded only as provider acceptance, not as proof that a notification was displayed or read.
 
 ## Employee provisioning and account operations
 
@@ -108,7 +114,7 @@ where employee_id = (select id from employee where email = lower(btrim('employee
 commit;
 ```
 
-The deployed version 1.2 migrations `001-initial-schema`, `002-global-fairness-allocation`, and `003-administrator-seat-reservations` remain immutable. Migration `004-half-day-allocation-units` adds attendance periods and normalized allocation units in staged changesets. It backfills existing bids as full-day and historical results as one-member single units without recalculating completed rounds. Historical assignments retain their published order, audit data, fingerprints, ledger entries, and algorithm version.
+The deployed version 1.2 migrations `001-initial-schema`, `002-global-fairness-allocation`, and `003-administrator-seat-reservations` remain immutable. Migration `004-half-day-allocation-units` adds attendance periods and normalized allocation units in staged changesets. It backfills existing bids as full-day and historical results as one-member single units without recalculating completed rounds. Historical assignments retain their published order, audit data, fingerprints, ledger entries, and algorithm version. Migration `005-web-push-bid-reminders` appends synchronized preferences, browser subscriptions, immutable round suppressions, daily dispatch claims, and per-device delivery attempts. It creates no synthetic notification records for existing employees.
 
 The authenticated bidding context and successful bid-replacement response include the round's physical capacity plus each date's reserved count, assignable capacity, and optional public description. These values are read-only context and do not participate in token validation, auto-distribution, or charging.
 

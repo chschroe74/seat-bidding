@@ -7,3 +7,5 @@ databaseChangeLog:
       file: db/changelog/changes/003-administrator-seat-reservations.yaml
   - include:
       file: db/changelog/changes/004-half-day-allocation-units.yaml
+  - include:
+      file: db/changelog/changes/005-web-push-bid-reminders.yaml

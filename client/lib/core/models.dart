@@ -350,3 +350,124 @@ class Problem implements Exception {
     @override
     String toString() => detail;
 }
+
+enum ReminderWeekday {
+    monday('MONDAY', 'Monday'),
+    tuesday('TUESDAY', 'Tuesday'),
+    wednesday('WEDNESDAY', 'Wednesday'),
+    thursday('THURSDAY', 'Thursday'),
+    friday('FRIDAY', 'Friday');
+
+    const ReminderWeekday(this.wireValue, this.label);
+    final String wireValue;
+    final String label;
+
+    static ReminderWeekday fromJson(Object? value) => values.firstWhere(
+        (weekday) => weekday.wireValue == value,
+        orElse: () => ReminderWeekday.monday,
+    );
+}
+
+class NotificationSchedule {
+    const NotificationSchedule({
+        required this.systemEnabled,
+        required this.localTime,
+        required this.timeZone,
+        required this.weekdays,
+    });
+    final bool systemEnabled;
+    final String localTime;
+    final String timeZone;
+    final List<ReminderWeekday> weekdays;
+    factory NotificationSchedule.fromJson(Map<String, dynamic> json) =>
+            NotificationSchedule(
+                systemEnabled: json['systemEnabled'] as bool,
+                localTime: json['localTime'] as String,
+                timeZone: json['timeZone'] as String,
+                weekdays: (json['weekdays'] as List)
+                        .map(ReminderWeekday.fromJson)
+                        .toList(),
+            );
+}
+
+class ReminderRound {
+    const ReminderRound({
+        required this.roundId,
+        required this.cutoffAt,
+        required this.suppressed,
+        required this.suppressionAvailable,
+    });
+    final int roundId;
+    final DateTime cutoffAt;
+    final bool suppressed;
+    final bool suppressionAvailable;
+    factory ReminderRound.fromJson(Map<String, dynamic> json) => ReminderRound(
+        roundId: json['roundId'] as int,
+        cutoffAt: DateTime.parse(json['cutoffAt'] as String),
+        suppressed: json['suppressed'] as bool,
+        suppressionAvailable: json['suppressionAvailable'] as bool,
+    );
+}
+
+class RegisteredPushDevice {
+    const RegisteredPushDevice({
+        required this.id,
+        required this.label,
+        required this.registeredAt,
+        required this.lastSeenAt,
+        this.lastSuccessfulPushAt,
+    });
+    final int id;
+    final String label;
+    final DateTime registeredAt;
+    final DateTime lastSeenAt;
+    final DateTime? lastSuccessfulPushAt;
+    factory RegisteredPushDevice.fromJson(Map<String, dynamic> json) =>
+            RegisteredPushDevice(
+                id: json['id'] as int,
+                label: json['label'] as String,
+                registeredAt: DateTime.parse(json['registeredAt'] as String),
+                lastSeenAt: DateTime.parse(json['lastSeenAt'] as String),
+                lastSuccessfulPushAt: json['lastSuccessfulPushAt'] == null
+                        ? null
+                        : DateTime.parse(json['lastSuccessfulPushAt'] as String),
+            );
+}
+
+class NotificationSettings {
+    const NotificationSettings({
+        required this.bidRemindersEnabled,
+        required this.bidReminderStartWeekday,
+        required this.schedule,
+        required this.webPushApplicationServerKey,
+        required this.devices,
+        this.currentRound,
+    });
+    final bool bidRemindersEnabled;
+    final ReminderWeekday bidReminderStartWeekday;
+    final NotificationSchedule schedule;
+    final String webPushApplicationServerKey;
+    final ReminderRound? currentRound;
+    final List<RegisteredPushDevice> devices;
+    factory NotificationSettings.fromJson(
+        Map<String, dynamic> json,
+    ) => NotificationSettings(
+        bidRemindersEnabled: json['bidRemindersEnabled'] as bool,
+        bidReminderStartWeekday: ReminderWeekday.fromJson(
+            json['bidReminderStartWeekday'],
+        ),
+        schedule: NotificationSchedule.fromJson(
+            json['schedule'] as Map<String, dynamic>,
+        ),
+        webPushApplicationServerKey: json['webPushApplicationServerKey'] as String,
+        currentRound: json['currentRound'] == null
+                ? null
+                : ReminderRound.fromJson(json['currentRound'] as Map<String, dynamic>),
+        devices: (json['devices'] as List)
+                .map(
+                    (value) =>
+                            RegisteredPushDevice.fromJson(value as Map<String, dynamic>),
+                )
+                .toList(),
+    );
+}

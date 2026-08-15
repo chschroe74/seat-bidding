@@ -26,7 +26,7 @@ class LiquibaseUpgradeTest {
             postgres.start();
             update(postgres, "db/changelog/db.changelog-master.yaml", postgres.getUsername());
             try (var connection = connection(postgres)) {
-                assertEquals(7, scalarInt(connection, "SELECT count(*) FROM databasechangelog"));
+                assertEquals(8, scalarInt(connection, "SELECT count(*) FROM databasechangelog"));
                 assertEquals(1, scalarInt(connection, "SELECT count(*) FROM information_schema.tables "
                         + "WHERE table_schema='public' AND table_name='seat_reservation'"));
                 assertEquals(1, scalarInt(connection, "SELECT count(*) FROM information_schema.columns "
@@ -56,7 +56,33 @@ class LiquibaseUpgradeTest {
             }
             update(postgres, "db/changelog/db.changelog-master.yaml", "seat_bidding_application");
             try (var connection = connection(postgres)) {
-            assertEquals(7, scalarInt(connection, "SELECT count(*) FROM databasechangelog"));
+                assertEquals(8, scalarInt(connection, "SELECT count(*) FROM databasechangelog"));
+            }
+        }
+    }
+
+    @Test
+    void upgradesHalfDaySchemaWithoutCreatingSyntheticReminderData() throws Exception {
+        try (var postgres = new PostgreSQLContainer<>("postgres:18-alpine")
+                .withDatabaseName("seat_bidding_half_day_upgrade")
+                .withUsername("seat_bidding")
+                .withPassword("seat_bidding")) {
+            postgres.start();
+            update(postgres, "db/changelog/db.changelog-half-day-baseline.yaml", postgres.getUsername());
+            try (var connection = connection(postgres); var statement = connection.createStatement()) {
+                statement.executeUpdate("INSERT INTO employee(email,first_name,last_name) "
+                        + "VALUES ('existing@example.com','Existing','Employee')");
+            }
+            update(postgres, "db/changelog/db.changelog-master.yaml", postgres.getUsername());
+            update(postgres, "db/changelog/db.changelog-master.yaml", postgres.getUsername());
+            try (var connection = connection(postgres)) {
+                assertEquals(8, scalarInt(connection, "SELECT count(*) FROM databasechangelog"));
+                assertEquals(1, scalarInt(connection, "SELECT count(*) FROM employee"));
+                assertEquals(0, scalarInt(connection, "SELECT count(*) FROM employee_notification_settings"));
+                assertEquals(0, scalarInt(connection, "SELECT count(*) FROM web_push_subscription"));
+                assertEquals(0, scalarInt(connection, "SELECT count(*) FROM bid_reminder_suppression"));
+                assertEquals(0, scalarInt(connection, "SELECT count(*) FROM bid_reminder_dispatch"));
+                assertEquals(0, scalarInt(connection, "SELECT count(*) FROM web_push_delivery_attempt"));
             }
         }
     }
@@ -201,6 +227,12 @@ class LiquibaseUpgradeTest {
                 "SELECT has_table_privilege('seat_bidding_application','allocation_unit','SELECT,INSERT,UPDATE,DELETE')"));
         assertTrue(scalarBoolean(connection,
                 "SELECT has_sequence_privilege('seat_bidding_application','allocation_unit_id_seq','USAGE')"));
+        assertTrue(scalarBoolean(connection,
+                "SELECT has_table_privilege('seat_bidding_application','web_push_subscription','SELECT,INSERT,UPDATE,DELETE')"));
+        assertTrue(scalarBoolean(connection,
+                "SELECT has_sequence_privilege('seat_bidding_application','web_push_subscription_id_seq','USAGE')"));
+        assertTrue(scalarBoolean(connection,
+                "SELECT has_table_privilege('seat_bidding_application','bid_reminder_dispatch','SELECT,INSERT,UPDATE,DELETE')"));
     }
 
     private static int scalarInt(Connection connection, String sql) throws SQLException {

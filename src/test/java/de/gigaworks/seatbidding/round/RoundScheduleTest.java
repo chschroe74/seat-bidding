@@ -25,5 +25,11 @@ class RoundScheduleTest {
         assertEquals(Instant.parse("2026-10-30T21:00:00Z"),
                 schedule.nextCutoff("0 0 22 ? * FRI", berlin, Instant.parse("2026-10-24T00:00:00Z")));
     }
-}
 
+    @Test void weekdayReminderUsesTheSameZoneAcrossDaylightSavingTime() {
+        assertEquals(Instant.parse("2026-10-23T08:00:00Z"),
+                schedule.nextCutoff("0 0 10 ? * MON-FRI", berlin, Instant.parse("2026-10-22T12:00:00Z")));
+        assertEquals(Instant.parse("2026-10-26T09:00:00Z"),
+                schedule.nextCutoff("0 0 10 ? * MON-FRI", berlin, Instant.parse("2026-10-23T12:00:00Z")));
+    }
+}

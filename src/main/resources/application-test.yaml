@@ -1,6 +1,14 @@
 seat-bidding:
+  time-zone: Europe/Berlin
   scheduler:
     enabled: false
+  reminders:
+    schedule:
+      enabled: false
+    web-push:
+      vapid-subject: mailto:test@test.invalid
+      vapid-public-key: BJ7tFVi60Tw6Y0xchiuEZjd62SBdsK0_-zDEk3W-blZy0hB5UUUkbiq6BZxeN5529gkofV463kj-WAaBib5vxYY
+      vapid-private-key: I4dqtEfeVxGFPO5i0TJugmklqM_g8uzIa-xwrgMMLok
   authentication:
     activation:
       code-pepper: test-activation-pepper-not-for-production

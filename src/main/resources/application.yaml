@@ -8,10 +8,21 @@ seat-bidding:
   tokens-per-round: ${TOKENS_PER_ROUND:60}
   carry-over-cap: ${CARRY_OVER_CAP:24}
   seat-capacity: ${SEAT_CAPACITY:9}
+  time-zone: "${SEAT_BIDDING_TIME_ZONE:Europe/Berlin}"
   scheduler:
-    cron: "${SCHEDULER_CRON:0 0 22 ? * FRI}"
-    time-zone: ${SCHEDULER_TIME_ZONE:Europe/Berlin}
-    enabled: ${SCHEDULER_ENABLED:true}
+    cron: "${SEAT_ASSIGNMENT_CRON:0 0 22 ? * FRI}"
+    enabled: ${SEAT_ASSIGNMENT_SCHEDULER_ENABLED:true}
+  reminders:
+    schedule:
+      cron: "${BID_REMINDER_CRON:0 0 10 ? * MON-FRI}"
+      enabled: ${BID_REMINDER_SCHEDULER_ENABLED:true}
+    web-push:
+      vapid-subject: ${WEB_PUSH_VAPID_SUBJECT}
+      vapid-public-key: ${WEB_PUSH_VAPID_PUBLIC_KEY}
+      vapid-private-key: ${WEB_PUSH_VAPID_PRIVATE_KEY}
+      time-to-live: ${WEB_PUSH_TTL:12H}
+      connect-timeout: ${WEB_PUSH_CONNECT_TIMEOUT:5S}
+      request-timeout: ${WEB_PUSH_REQUEST_TIMEOUT:10S}
   lock-timeout: ${LOCK_TIMEOUT:5S}
   public-client:
     android-download-url: ${ANDROID_DOWNLOAD_URL:}
@@ -61,7 +72,7 @@ quarkus:
     password: ${SMTP_PASSWORD}
     start-tls: REQUIRED
   scheduler:
-    enabled: ${SCHEDULER_ENABLED:true}
+    enabled: true
   otel:
     sdk:
       disabled: true

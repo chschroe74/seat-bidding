@@ -28,22 +28,22 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 @ApplicationScoped
 public class SeatReservationService {
-    
+
     @Inject
     EmployeeIdentityService identity;
-    
+
     @Inject
     SeatReservationRepository reservations;
-    
+
     @Inject
     BiddingRoundRepository rounds;
-    
+
     @Inject
     SeatBiddingConfiguration configuration;
-    
+
     @Inject
     Clock clock;
-    
+
     @Transactional
     public SeatReservationListResponse list(String fromValue, String toValue) {
         identity.requireCurrentAdmin();
@@ -59,9 +59,9 @@ public class SeatReservationService {
         var values = reservations.findBetween(from, to).stream()
                 .map(reservation -> response(reservation, rounds.findForTargetDate(reservation.targetDate).orElse(null), now))
                 .toList();
-        return new SeatReservationListResponse(now, configuration.scheduler().timeZone().getId(), values);
+        return new SeatReservationListResponse(now, configuration.timeZone().getId(), values);
     }
-    
+
     @Transactional
     public CreatedReservation create(CreateSeatReservationRequest request) {
         var date = request.date();
@@ -97,7 +97,7 @@ public class SeatReservationService {
         return new CreatedReservation(URI.create("/api/admin/seat-reservations/" + reservation.id),
                 response(reservation, round, now));
     }
-    
+
     @Transactional
     public void delete(long reservationId) {
         var existing = reservations.findByIdOptional(reservationId).orElseThrow(() ->
@@ -111,20 +111,20 @@ public class SeatReservationService {
         log.info("operation=reservation-delete outcome=success reservationId={} targetDate={} count={} employeeId={}",
                 reservation.id, reservation.targetDate, reservation.reservedSeatCount, actor.id);
     }
-    
+
     private void validateDate(LocalDate date) {
         if (date == null) {
             throw ApplicationProblem.badRequest("RESERVATION_DATE_INVALID", "Invalid reservation date",
                     "A reservation date is required.");
         }
-        var today = LocalDate.now(clock.withZone(configuration.scheduler().timeZone()));
+        var today = LocalDate.now(clock.withZone(configuration.timeZone()));
         if (date.isBefore(today) || date.getDayOfWeek() == DayOfWeek.SATURDAY
                 || date.getDayOfWeek() == DayOfWeek.SUNDAY) {
             throw ApplicationProblem.badRequest("RESERVATION_DATE_INVALID", "Invalid reservation date",
                     "The reservation date must be today or later and Monday through Friday.");
         }
     }
-    
+
     private int applicableCapacity(BiddingRoundEntity round, java.time.Instant now) {
         if (round == null) {
             return configuration.seatCapacity();
@@ -132,14 +132,14 @@ public class SeatReservationService {
         ensureMutable(round, now);
         return round.seatCapacity;
     }
-    
+
     private static void ensureMutable(BiddingRoundEntity round, java.time.Instant now) {
         if (round != null && (round.status != RoundStatus.OPEN || !now.isBefore(round.cutoffAt))) {
             throw ApplicationProblem.conflict("RESERVATION_IMMUTABLE", "Reservation is immutable",
                     "The reservation can no longer be changed because its round has closed.");
         }
     }
-    
+
     private SeatReservationResponse response(SeatReservationEntity reservation, BiddingRoundEntity round,
             java.time.Instant now) {
         int capacity = round == null ? configuration.seatCapacity() : round.seatCapacity;
@@ -148,7 +148,7 @@ public class SeatReservationService {
                 capacity, reservation.description, mutable, round == null ? null : round.cutoffAt,
                 round == null ? null : round.status.name());
     }
-    
+
     private static LocalDate parseDate(String value, String field) {
         if (value == null || value.isBlank()) {
             throw ApplicationProblem.badRequest("RESERVATION_RANGE_INVALID", "Invalid reservation range",
@@ -162,11 +162,11 @@ public class SeatReservationService {
                     field + " must use YYYY-MM-DD format.");
         }
     }
-    
+
     private static ApplicationProblem invalidRange(String detail) {
         return ApplicationProblem.badRequest("RESERVATION_RANGE_INVALID", "Invalid reservation range", detail);
     }
-    
+
     private static String normalizeDescription(String description) {
         if (description == null) {
             return null;
@@ -181,12 +181,12 @@ public class SeatReservationService {
         }
         return normalized;
     }
-    
+
     private static ApplicationProblem duplicate(LocalDate date) {
         return ApplicationProblem.conflict("RESERVATION_ALREADY_EXISTS", "Reservation already exists",
                 "A reservation already exists for " + date + ".");
     }
-    
+
     private static boolean isDuplicate(Throwable exception) {
         for (Throwable current = exception; current != null; current = current.getCause()) {
             if (String.valueOf(current.getMessage()).contains("uq_reservation_target_date")) {
@@ -195,11 +195,11 @@ public class SeatReservationService {
         }
         return false;
     }
-    
+
     public record CreatedReservation(
             URI location,
             SeatReservationResponse response) {
-        
+
     }
-    
+
 }

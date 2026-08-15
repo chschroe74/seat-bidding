@@ -91,8 +91,70 @@ class ApiContractPersistenceTest {
                 .findFirst().orElseThrow();
         assertTrue(participantProperties.keySet().containsAll(List.of("unitType", "unitRank", "unitScoreTokens",
                 "attendancePeriod", "displayRank")));
+        assertTrue(document.contains("/api/settings/notifications"));
+        assertTrue(document.contains("webPushApplicationServerKey"));
         assertFalse(document.contains("androidSession"));
         assertFalse(document.toLowerCase().contains("bearerformat"));
+    }
+
+    @Test
+    void notificationPreferencesDevicesCsrfAndOwnershipFollowTheAccountContract() {
+        provision("notifications@example.com", true, PASSWORD);
+        provision("other-notifications@example.com", true, PASSWORD);
+        String session = login("notifications@example.com", PASSWORD, ORIGIN, true)
+                .then().statusCode(200).extract().cookie("seat_session");
+        String otherSession = login("other-notifications@example.com", PASSWORD, ORIGIN, true)
+                .then().statusCode(200).extract().cookie("seat_session");
+        Csrf csrf = csrf();
+
+        given().get("/api/settings/notifications").then().statusCode(401);
+        given().cookie("seat_session", session).get("/api/settings/notifications").then().statusCode(200)
+                .body("bidRemindersEnabled", equalTo(false))
+                .body("bidReminderStartWeekday", equalTo("MONDAY"))
+                .body("schedule.localTime", equalTo("10:00"))
+                .body("schedule.timeZone", equalTo("Europe/Berlin"))
+                .body("schedule.weekdays.size()", equalTo(5))
+                .body("webPushApplicationServerKey", notNullValue())
+                .body("devices.size()", equalTo(0));
+
+        given().cookie("seat_session", session).contentType(ContentType.JSON)
+                .body(Map.of("bidRemindersEnabled", true, "bidReminderStartWeekday", "FRIDAY"))
+                .put("/api/settings/notifications").then().statusCode(400)
+                .body("code", equalTo("REQUEST_REJECTED"));
+        putJsonWithSession("/api/settings/notifications",
+                Map.of("bidRemindersEnabled", true, "bidReminderStartWeekday", "FRIDAY"), csrf, session)
+                .then().statusCode(200).body("bidRemindersEnabled", equalTo(true))
+                .body("bidReminderStartWeekday", equalTo("FRIDAY"));
+        putJsonWithSession("/api/settings/notifications",
+                Map.of("bidRemindersEnabled", true, "bidReminderStartWeekday", "SATURDAY"), csrf, session)
+                .then().statusCode(400);
+
+        String endpoint = "https://1.1.1.1/push/capability?token=opaque";
+        Map<String, Object> device = Map.of(
+                "endpoint", endpoint,
+                "keys", Map.of(
+                        "p256dh", "BJ7tFVi60Tw6Y0xchiuEZjd62SBdsK0_-zDEk3W-blZy0hB5UUUkbiq6BZxeN5529gkofV463kj-WAaBib5vxYY",
+                        "auth", "AAAAAAAAAAAAAAAAAAAAAA"),
+                "deviceLabel", "Test browser");
+        long deviceId = postJsonWithSession("/api/settings/notifications/devices", device, csrf, session)
+                .then().statusCode(201).header("Location", containsString("/api/settings/notifications/devices/"))
+                .body("label", equalTo("Test browser"))
+                .body("endpoint", equalTo(null)).body("p256dh", equalTo(null))
+                .extract().jsonPath().getLong("id");
+        postJsonWithSession("/api/settings/notifications/devices", device, csrf, session)
+                .then().statusCode(200).body("label", equalTo("Test browser"));
+        postJsonWithSession("/api/settings/notifications/devices", device, csrf, otherSession)
+                .then().statusCode(409).body("code", equalTo("PUSH_ENDPOINT_OWNERSHIP_CONFLICT"));
+
+        deleteWithSession("/api/settings/notifications/devices/" + deviceId, csrf, otherSession)
+                .then().statusCode(404);
+        deleteWithSession("/api/settings/notifications/devices/" + deviceId, csrf, session)
+                .then().statusCode(204);
+        given().cookie("seat_session", session).get("/api/settings/notifications").then().statusCode(200)
+                .body("bidRemindersEnabled", equalTo(true)).body("devices.size()", equalTo(0));
+        postJsonWithSession("/api/settings/notifications/bid-reminders/current-round/suppression",
+                Map.of("roundId", Long.MAX_VALUE), csrf, session).then().statusCode(409)
+                .body("code", equalTo("REMINDER_SUPPRESSION_INAPPLICABLE"));
     }
 
     @Test

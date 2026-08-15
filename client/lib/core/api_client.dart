@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 import 'auth_service.dart';
 import 'models.dart';
+import 'web_push_client.dart';
 
 class ApiClient {
     ApiClient(this.auth);
@@ -89,6 +90,77 @@ class ApiClient {
         Future<Response<void>> send() =>
                 auth.dio.delete<void>('/admin/seat-reservations/$id');
         await _adminMutation(send);
+    }
+
+    Future<NotificationSettings> notificationSettings() async =>
+            NotificationSettings.fromJson(
+                (await auth.dio.get<Map<String, dynamic>>(
+                    '/settings/notifications',
+                )).data!,
+            );
+
+    Future<NotificationSettings> updateNotificationSettings(
+        bool enabled,
+        ReminderWeekday weekday,
+    ) async => NotificationSettings.fromJson(
+        (await _mutation<Map<String, dynamic>>(
+            () => auth.dio.put<Map<String, dynamic>>(
+                '/settings/notifications',
+                data: {
+                    'bidRemindersEnabled': enabled,
+                    'bidReminderStartWeekday': weekday.wireValue,
+                },
+            ),
+        )).data!,
+    );
+
+    Future<RegisteredPushDevice> registerPushDevice(
+        LocalPushSubscription subscription,
+        String label,
+    ) async => RegisteredPushDevice.fromJson(
+        (await _mutation<Map<String, dynamic>>(
+            () => auth.dio.post<Map<String, dynamic>>(
+                '/settings/notifications/devices',
+                data: {
+                    'endpoint': subscription.endpoint,
+                    'keys': {'p256dh': subscription.p256dh, 'auth': subscription.auth},
+                    'expirationTime': subscription.expirationTime
+                            ?.toUtc()
+                            .toIso8601String(),
+                    'deviceLabel': label,
+                },
+            ),
+        )).data!,
+    );
+
+    Future<void> removePushDevice(int id) async {
+        await _mutation<void>(
+            () => auth.dio.delete<void>('/settings/notifications/devices/$id'),
+        );
+    }
+
+    Future<void> suppressBidReminders(int roundId) async {
+        await _mutation<void>(
+            () => auth.dio.post<void>(
+                '/settings/notifications/bid-reminders/current-round/suppression',
+                data: {'roundId': roundId},
+            ),
+        );
+    }
+
+    Future<Response<T>> _mutation<T>(Future<Response<T>> Function() send) async {
+        try {
+            return await send();
+        } on DioException catch (error) {
+            final problem = error.error;
+            if (problem is Problem &&
+                    (problem.code == 'CSRF_INVALID' ||
+                            problem.code == 'REQUEST_REJECTED')) {
+                await auth.refreshCsrf();
+                return send();
+            }
+            rethrow;
+        }
     }
 
     Future<Response<T>> _adminMutation<T>(

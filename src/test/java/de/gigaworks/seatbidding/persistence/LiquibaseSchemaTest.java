@@ -21,10 +21,10 @@ class LiquibaseSchemaTest {
         try (var connection = dataSource.getConnection();
              var statement = connection.prepareStatement(
                      "select count(*) from information_schema.tables where table_schema='public' and table_name in " +
-                             "('employee','account_activation','bidding_round','round_date','round_participation','bid','seat_reservation','allocation_unit','seat_assignment','round_allocation_audit','token_ledger')")) {
+                             "('employee','account_activation','bidding_round','round_date','round_participation','bid','seat_reservation','allocation_unit','seat_assignment','round_allocation_audit','token_ledger','employee_notification_settings','web_push_subscription','bid_reminder_suppression','bid_reminder_dispatch','web_push_delivery_attempt')")) {
             try (var result = statement.executeQuery()) {
                 assertTrue(result.next());
-                assertEquals(11, result.getInt(1));
+                assertEquals(16, result.getInt(1));
             }
         }
         try (var connection = dataSource.getConnection();
@@ -39,7 +39,7 @@ class LiquibaseSchemaTest {
              var statement = connection.prepareStatement("select count(*) from databasechangelog")) {
             try (var result = statement.executeQuery()) {
                 assertTrue(result.next());
-                assertEquals(6, result.getInt(1));
+                assertEquals(7, result.getInt(1));
             }
         }
         try (var connection = dataSource.getConnection();

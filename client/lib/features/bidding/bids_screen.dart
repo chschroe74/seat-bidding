@@ -3,13 +3,15 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
+import 'package:go_router/go_router.dart';
 import '../../core/api_client.dart';
 import '../../core/models.dart';
 import 'bid_draft.dart';
 
 class BidsScreen extends StatefulWidget {
-    const BidsScreen({super.key, required this.api});
+    const BidsScreen({super.key, required this.api, this.reminderRoundId});
     final ApiClient api;
+    final int? reminderRoundId;
     @override
     State<BidsScreen> createState() => _BidsScreenState();
 }
@@ -24,6 +26,7 @@ class _BidsScreenState extends State<BidsScreen> with WidgetsBindingObserver {
     bool saving = false;
     bool refreshing = false;
     Timer? ticker;
+    late bool showReminderChoices = widget.reminderRoundId != null;
 
     @override
     void initState() {
@@ -234,6 +237,33 @@ class _BidsScreenState extends State<BidsScreen> with WidgetsBindingObserver {
                     ListView(
                         padding: const EdgeInsets.all(16),
                         children: [
+                            if (showReminderChoices)
+                                Card(
+                                    color: Theme.of(context).colorScheme.secondaryContainer,
+                                    child: ListTile(
+                                        leading: const Icon(Icons.notifications_active),
+                                        title: const Text('Bid reminder'),
+                                        subtitle: const Text(
+                                            'Place at least one positive bid, or skip reminders for this bidding round.',
+                                        ),
+                                        trailing: Wrap(
+                                            children: [
+                                                TextButton(
+                                                    onPressed: () => context.go(
+                                                        '/settings/reminders/skip?roundId=${widget.reminderRoundId}',
+                                                    ),
+                                                    child: const Text('Skip this week'),
+                                                ),
+                                                IconButton(
+                                                    tooltip: 'Dismiss reminder choices',
+                                                    onPressed: () =>
+                                                            setState(() => showReminderChoices = false),
+                                                    icon: const Icon(Icons.close),
+                                                ),
+                                            ],
+                                        ),
+                                    ),
+                                ),
                             Row(
                                 children: [
                                     Expanded(

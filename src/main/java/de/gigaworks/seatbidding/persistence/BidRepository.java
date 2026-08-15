@@ -20,4 +20,8 @@ public class BidRepository implements PanacheRepositoryBase<BidEntity, Long> {
         return list("roundDate.round.id", roundId);
     }
 
+    public boolean hasPositiveBid(long roundId, long employeeId) {
+        return count("roundDate.round.id = ?1 and participation.employee.id = ?2", roundId, employeeId) > 0;
+    }
+
 }

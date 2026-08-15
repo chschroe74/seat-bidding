@@ -1,4 +1,11 @@
 seat-bidding:
+  reminders:
+    schedule:
+      enabled: false
+    web-push:
+      vapid-subject: mailto:development@localhost
+      vapid-public-key: BJ7tFVi60Tw6Y0xchiuEZjd62SBdsK0_-zDEk3W-blZy0hB5UUUkbiq6BZxeN5529gkofV463kj-WAaBib5vxYY
+      vapid-private-key: I4dqtEfeVxGFPO5i0TJugmklqM_g8uzIa-xwrgMMLok
   authentication:
     activation:
       code-pepper: "oE_Q-%ag@rBPf-kNZtFqEdUa6JOo4pYW"

@@ -11,12 +11,12 @@ import jakarta.inject.Inject;
 @ApplicationScoped
 @Slf4j
 public class RoundScheduler {
-    
+
     @Inject
     RoundProcessingService processing;
-    
-    @Scheduled(identity = "seat-bidding-round-processing", cron = "{seat-bidding.scheduler.cron}",
-            timeZone = "{seat-bidding.scheduler.time-zone}", skipExecutionIf = SchedulerDisabled.class)
+
+    @Scheduled(identity = "seat-bidding-round-processing", cron = "${seat-bidding.scheduler.cron}",
+            timeZone = "${seat-bidding.time-zone}", skipExecutionIf = SchedulerDisabled.class)
     void run() {
         try {
             boolean processed = processing.processDueRound();
@@ -27,18 +27,18 @@ public class RoundScheduler {
             throw failure;
         }
     }
-    
+
     @ApplicationScoped
     public static class SchedulerDisabled implements Scheduled.SkipPredicate {
-        
+
         @Inject
         SeatBiddingConfiguration configuration;
-        
+
         @Override
         public boolean test(ScheduledExecution execution) {
             return !configuration.scheduler().enabled();
         }
-        
+
     }
-    
+
 }

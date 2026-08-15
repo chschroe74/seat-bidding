@@ -21,6 +21,7 @@
         <surefire-plugin.version>3.5.4</surefire-plugin.version>
         <password4j.version>1.8.4</password4j.version>
         <lombok.version>1.18.42</lombok.version>
+        <webpush.version>1.3.0</webpush.version>
     </properties>
 
     <dependencyManagement>
@@ -112,6 +113,11 @@
             <groupId>com.password4j</groupId>
             <artifactId>password4j</artifactId>
             <version>${password4j.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.interaso</groupId>
+            <artifactId>webpush</artifactId>
+            <version>${webpush.version}</version>
         </dependency>
         <!-- Test Dependencies -->
         <dependency>

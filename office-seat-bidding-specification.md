@@ -4,11 +4,11 @@
 **Target release:** Version 1.3  
 **Primary client:** Flutter Progressive Web App (PWA)  
 **Optional client:** Native Flutter Android application  
-**Backend:** Java 25, Quarkus, PostgreSQL, Hibernate ORM with Panache, Liquibase, application-managed authentication, Quarkus Scheduler, Jib  
+**Backend:** Java 25, Quarkus, PostgreSQL, Hibernate ORM with Panache, Liquibase, application-managed authentication, Quarkus Scheduler, standards-based Web Push, Jib
 
 ## 1. Purpose
 
-The application distributes a limited number of office seats fairly among employees. Employees receive tokens for each bidding round and privately bid for individual weekdays, optionally indicating morning-only or afternoon-only attendance. Administrators may reserve physical seats before allocation, and employees see those reservations while deciding their bids. At cutoff, the backend subtracts reservations from capacity, forms complementary half-day sharing pairs, ranks full-day employees, unpaired half-day employees, and half-day pairs as allocation units, resolves capacity-boundary ties globally across the round using fairness-aware allocation, publishes assignments, deducts only successful individual bids, and opens the next round.
+The application distributes a limited number of office seats fairly among employees. Employees receive tokens for each bidding round and privately bid for individual weekdays, optionally indicating morning-only or afternoon-only attendance. Administrators may reserve physical seats before allocation, and employees see those reservations while deciding their bids. Opted-in employees may register one or more web-capable devices and receive daily reminders until they place a positive bid or suppress reminders for the current round. At cutoff, the backend subtracts reservations from capacity, forms complementary half-day sharing pairs, ranks full-day employees, unpaired half-day employees, and half-day pairs as allocation units, resolves capacity-boundary ties globally across the round using fairness-aware allocation, publishes assignments, deducts only successful individual bids, and opens the next round.
 
 This document is the authoritative version 1.3 implementation contract. Requirements marked **MUST**, **SHOULD**, and **MAY** have their conventional meanings.
 
@@ -25,6 +25,8 @@ This document is the authoritative version 1.3 implementation contract. Requirem
 - Keep all employees' open-round bids private.
 - Maintain auditable token balances and round results.
 - Let manually designated administrators create and delete dated seat reservations through a desktop-only PWA section before the affected assignments are processed.
+- Let employees manage synchronized bid-reminder preferences and registered Web Push devices from a settings page available on desktop and mobile.
+- Send one server-driven reminder per eligible weekday to every active registered device until the employee places a positive bid or suppresses reminders for that round.
 - Serve the compiled Flutter PWA and REST API from one Quarkus application image.
 - Optionally distribute a native Android client using the same API.
 
@@ -36,7 +38,7 @@ This document is the authoritative version 1.3 implementation contract. Requirem
 - Time ranges other than the fixed morning/afternoon periods, partial-day pricing, and administrator-created pairings.
 - Non-weekly or overlapping round cadences in the UI.
 - Kubernetes or multiple active scheduler instances.
-- Server-driven PWA reminders and guaranteed offline bidding.
+- Guaranteed notification delivery, SMS reminders, and guaranteed offline bidding.
 - Managing unassigned seats or employees who attend without an assignment.
 
 ## 3. Terminology and time model
@@ -53,11 +55,15 @@ This document is the authoritative version 1.3 implementation contract. Requirem
 - **Fairness identity:** The stable identity used to count round-level boundary-tie wins. A single unit uses its employee ID; a pair uses the canonical unordered combination of both employee IDs.
 - **Carry-over:** The capped portion of the balance remaining after successful bids are deducted. Tokens committed to unsuccessful bids remain unspent.
 - **Seat reservation:** One administrator-created record that removes a positive number of physical seats from bidding for one future Monday–Friday date and may include a public description.
+- **Business time zone:** The single configured IANA zone used for round calendars, allocation cutoff scheduling, reminder scheduling, weekday interpretation, and user-facing business times.
+- **Push subscription / registered device:** One browser-generated Web Push endpoint and encryption-key set bound to the authenticated employee and one browser installation. One employee may have multiple active subscriptions.
+- **Bid reminder:** One generic Web Push notification generated for an eligible employee by the weekday reminder schedule and delivered independently to every active registered device.
+- **Round reminder suppression:** An irreversible employee choice to stop further bid reminders for one open bidding round. It expires by scope when the successor round becomes current and does not disable future rounds.
 - **Physical seat capacity:** The round's configured `seatCapacity` snapshot before reservations.
 - **Assignable seat capacity:** `physicalSeatCapacity - reservedSeatCount` for a target date. It may be zero even though configured physical capacity must be positive.
-- **Cutoff:** An instant computed by the backend from a Quartz cron expression and IANA time zone.
+- **Cutoff:** An instant computed by the backend from the allocation Quartz cron expression and shared business time zone.
 
-All persisted instants MUST use UTC (`timestamptz`/`Instant`). Target dates use `date`/`LocalDate`. The scheduler interprets its cron expression in the configured IANA zone, including daylight-saving transitions.
+All persisted instants MUST use UTC (`timestamptz`/`Instant`). Target and reminder business dates use `date`/`LocalDate`. Both scheduled methods interpret their cron expressions in the shared business time zone, including daylight-saving transitions. The JVM, container, database, and client-device default zones are never authoritative for business rules.
 
 ## 4. Business configuration
 
@@ -68,12 +74,14 @@ The following settings come from Quarkus application configuration and are valid
 | Tokens granted per round | 60 | integer `>= 0` |
 | Carry-over cap | 24 | integer `>= 0` |
 | Seat capacity | deployment-specific | integer `>= 1`, same for all dates |
-| Scheduler cron | `0 0 22 ? * FRI` | valid Quarkus/Quartz cron |
-| Scheduler time zone | `Europe/Berlin` | valid IANA zone |
-| Scheduler enabled | `true` | boolean |
+| Business time zone | `Europe/Berlin` | valid IANA zone, shared by both schedules |
+| Allocation scheduler cron | `0 0 22 ? * FRI` | valid Quarkus/Quartz cron |
+| Allocation scheduler enabled | `true` | boolean |
+| Bid-reminder scheduler cron | `0 0 10 ? * MON-FRI` | valid Quarkus/Quartz cron representing one fixed local-time trigger on every Monday–Friday |
+| Bid-reminder scheduler enabled | `true` | boolean |
 | Lock timeout | deployment-specific, recommended 5 seconds | positive duration |
 
-Every round MUST snapshot the first three business values, cutoff instant, configured time zone, and schedule-derived target dates. Changing runtime configuration MUST affect only subsequently created rounds, not an already open or completed round.
+Every round MUST snapshot the first three business values, cutoff instant, shared business time zone, and schedule-derived target dates. Changing round configuration MUST affect only subsequently created rounds, not an already open or completed round. Reminder weekday evaluation for an open round uses that round's snapshotted zone; deployments MUST change the shared business time zone only at a round boundary so the scheduler trigger and open-round calendar cannot disagree.
 
 Reservations do not change the snapshotted physical capacity. The reservation applicable to a target date is read and locked during round processing, and its count determines that date's assignable capacity.
 
@@ -108,7 +116,7 @@ Reservations do not change the snapshotted physical capacity. The reservation ap
 
 1. Only an authenticated employee whose current database record has `is_admin = true` may list, create, or delete reservations. No REST operation or UI control may grant or revoke administrator status.
 2. A reservation has one target date, a positive integer `reservedSeatCount`, and an optional public description. The current release permits at most one reservation record per date; changing it means deleting and recreating it while mutations are still allowed.
-3. The target date MUST be today or later in the scheduler's configured IANA time zone, MUST be Monday through Friday, and MUST not belong to a round that is at/after cutoff, `PROCESSING`, `COMPLETED`, or `FAILED`. Public holidays remain ordinary weekdays.
+3. The target date MUST be today or later in the shared business time zone, MUST be Monday through Friday, and MUST not belong to a round that is at/after cutoff, `PROCESSING`, `COMPLETED`, or `FAILED`. Public holidays remain ordinary weekdays.
 4. If the date belongs to the current `OPEN` round, creation and deletion are allowed only strictly before its cutoff. If no round yet contains the future date, the reservation remains mutable until that date is included in an open round and its cutoff is reached.
 5. The reserved count MUST NOT exceed the applicable physical capacity: use the containing open round's snapshotted capacity when present and otherwise the current configured capacity. A future capacity change that would place an existing reservation above capacity is invalid and MUST be rejected before the affected round is opened.
 6. The description is optional, trimmed, plain text, and at most 500 Unicode code points. An empty normalized description is stored as null. It is visible to every authenticated user in the published assignment view, so the admin UI MUST state that it is public and it MUST never be interpreted as markup.
@@ -180,6 +188,22 @@ Published ranking places successful units above the physical-seat boundary and u
 - Published dates show physical capacity, reserved count, assignable capacity, and the reservation's public description where present.
 - Employees who did not bid on a date do not appear in its participant list.
 
+### 5.7 Bid-reminder rules
+
+1. Bid reminders are an employee-level, explicit opt-in and default to disabled. The employee selects one start weekday from `MONDAY` through `FRIDAY`; `MONDAY` is the default retained preference.
+2. The enabled flag and start weekday synchronize across clients. Push permission and subscription are device/browser-installation state: configuring reminders on desktop does not grant permission on a phone, and registering one device does not register another.
+3. Enabling the account preference does not implicitly subscribe the current browser. Each desired device MUST separately complete a user-initiated Web Push permission and subscription flow. An employee may retain and use multiple active devices.
+4. Disabling the account preference stops all bid-reminder sends but retains valid device subscriptions and the selected weekday. Re-enabling therefore reuses them without another permission prompt where the browser and operating system still permit notifications.
+5. On each configured scheduler trigger, an employee is eligible only when the current round is `OPEN`, reminders are enabled, the business weekday is at or after the selected Monday–Friday start day, at least one active subscription exists, no positive bid exists for that employee in the current round, and no suppression exists for that employee and round.
+6. A complete bid-set replacement containing at least one positive bid stops reminders. An empty/all-zero replacement does not count as having placed bids. If the employee later removes every positive bid while the round remains open, ordinary eligibility resumes unless that round is suppressed.
+7. One logical reminder is generated at most once per employee, round, and business date. It is sent independently to every active registered device present when that logical reminder is processed. Multiple devices may therefore display the same reminder.
+8. The generic notification states that bids for the next week have not yet been placed and contains no token amounts, bid values, attendance choices, colleague information, or other sensitive business data.
+9. Where the browser supports custom notification actions, offer **Place bids** and **Skip reminders this week**. **Place bids** opens the bidding route. **Skip reminders this week** opens the authenticated application and requires an explicit confirmation; it MUST NOT mutate state directly from a notification action, URL, or unauthenticated background request.
+10. Because notification actions are not universally supported, tapping the notification body opens the bidding route with an in-app reminder affordance that exposes the same choices. Unsupported actions therefore reduce convenience, not functionality.
+11. Confirming **Skip reminders this week** creates an immutable suppression for the current open round. The confirmation explains that it cannot be undone for that round and that reminders automatically resume for the next round if the global preference remains enabled. Disabling and re-enabling the global preference does not remove a suppression.
+12. Browser/operating-system notification denial or revocation is independent of the server preference. The application cannot override it and must show current-device guidance where detectable. A registered device entry is not a guarantee that the operating system will display a notification.
+13. Web Push is best effort. Focus modes, browser/OS policy, connectivity, expired subscriptions, vendor push services, and application downtime may prevent or delay delivery. The product MUST never claim guaranteed delivery or that a notification was seen.
+
 ## 6. Round lifecycle and scheduler
 
 ### 6.1 States
@@ -194,7 +218,7 @@ On a fresh database, an idempotent bootstrap service MUST create an open round w
 
 ### 6.3 Scheduled processing
 
-The `quarkus-scheduler` job runs using the configured Quartz expression and time zone. The current release assumes one Quarkus instance; it does not implement distributed locking, clustered Quartz, or leader election. The job MUST nevertheless be transactional and idempotent.
+The allocation `quarkus-scheduler` job runs using its configured Quartz expression and the shared business time zone. The current release assumes one Quarkus instance; it does not implement distributed locking, clustered Quartz, or leader election. The job MUST nevertheless be transactional and idempotent.
 
 At each trigger, the service MUST:
 
@@ -220,6 +244,23 @@ Database constraints MUST prevent duplicate successor rounds, bids, units, unit 
 ### 6.4 Boundary behavior
 
 The backend's current instant is authoritative. A request arriving at or after cutoff MUST be rejected even if the scheduled job has not yet completed. The UI refreshes after cutoff and may temporarily show processing status. The assignment view switches to the newly completed round as soon as it is published; the bidding view switches to its successor.
+
+### 6.5 Scheduled bid reminders
+
+A separate normal Quarkus `@Scheduled` method runs once at each configured bid-reminder cron trigger. Its default is 10:00 Monday through Friday in the shared `Europe/Berlin` business time zone. It is not a polling loop and performs no periodic catch-up scan. If the application is unavailable for a trigger, that day's reminder is missed.
+
+The method MUST have a stable identity, use `concurrentExecution = SKIP`, and reference the configured cron expression and shared time zone through `@Scheduled` property expressions. When its feature-level scheduler flag is disabled, it performs no work. The current single-instance deployment assumptions in section 6.3 also apply.
+
+At each trigger, the service MUST:
+
+1. Resolve the current `OPEN` round and the trigger's business date/weekday using the shared business time zone; stop when there is no open round or the weekday is outside Monday–Friday.
+2. Select employees satisfying every eligibility rule in section 5.7 without exposing their bids.
+3. Atomically claim at most one logical dispatch per employee, round, and business date before contacting external push services.
+4. Snapshot the employee's active subscriptions for that dispatch and attempt one send to each. A failure for one employee or device MUST NOT prevent remaining recipients from being processed.
+5. Record aggregate dispatch outcome and per-device attempt outcome without storing payload secrets in logs.
+6. Mark permanently rejected/expired subscriptions inactive when the vendor response establishes that they can no longer be used. Temporary failures are recorded but are not retried by a polling scheduler.
+
+The uniqueness claim makes duplicate scheduler invocation safe, but external Web Push is not an exactly-once transport. A push-service acceptance response means only that the vendor accepted the request; it does not prove device display or user visibility.
 
 ## 7. Authentication, identity, and security
 
@@ -306,7 +347,9 @@ Android uses the same form login endpoint and encrypted authentication cookie. I
 - All `/api/admin/*` operations require `ADMIN` through Quarkus path policy and/or `@RolesAllowed("ADMIN")`. Because the form cookie is stateless, every admin operation MUST additionally reload the acting employee and confirm `is_admin = true`; removing the database flag therefore blocks subsequent admin requests even if an older cookie still carries the role. Granting the flag may require a fresh login before the cookie contains `ADMIN`.
 - PWA API calls use relative same-origin `/api/...` URLs. Android uses its configured absolute HTTPS base URL; browser CORS, if enabled at all, uses a strict allowlist.
 - TLS is mandatory outside local development. Apply CSP, HSTS at the HTTPS boundary, secure headers, request-size limits, dependency scanning, secret rotation procedures, and redaction of authentication and personal data in logs.
-- Passwords, activation codes, activation authorizations, authentication cookies, stored hashes, session-encryption/CSRF keys, and SMTP credentials MUST never be returned by ordinary APIs or written to logs, metrics, or traces.
+- Web Push subscription endpoints and authentication keys are capability-bearing secrets. Return them only where strictly required to register the current authenticated browser; never expose one employee's subscription material to another employee or include it in logs, metrics, traces, problem details, analytics, or notification payloads.
+- Validate submitted push endpoints as bounded HTTPS URLs without user information, fragments, loopback/private/link-local destinations, or unsafe redirects. Outbound delivery MUST defend against SSRF and connect only to validated browser push-service endpoints. VAPID private keys are external secrets; only the public application-server key may be returned to an authenticated client.
+- Passwords, activation codes, activation authorizations, authentication cookies, stored hashes, session-encryption/CSRF/VAPID private keys, push subscription secrets, and SMTP credentials MUST never be returned by ordinary APIs or written to logs, metrics, or traces.
 
 ## 8. Concurrency and transactions
 
@@ -323,6 +366,8 @@ The lock is scoped to one employee and round, allowing different employees to su
 Scheduler processing locks the due round. Password creation locks the employee and activation rows. All balance- and activation-state changes use database transactions even in the initial single-instance deployment; form-cookie renewal itself is handled by Quarkus and has no database transaction.
 
 Reservation creation/deletion runs transactionally. When the target date belongs to an existing round, the service locks that round before rechecking state and cutoff; scheduler processing takes the same round lock before locking/reading reservations. A unique target-date constraint prevents duplicate reservations. Concurrent admin operations that lose the race return `409` with an authoritative refreshed state. Authorization is revalidated from the current employee database row inside the mutation transaction.
+
+Notification preference updates and subscription registration/removal are transactional and scoped to the authenticated employee. Suppression creation locks or otherwise atomically validates the current open round and is idempotent for the employee/round pair. The reminder scheduler claims a unique employee/round/business-date dispatch before external delivery; concurrent or repeated invocations cannot create a second logical dispatch or a second attempt for the same subscription. Network calls MUST NOT hold locks on bidding, participation, or round-allocation rows.
 
 ## 9. Database model
 
@@ -500,9 +545,85 @@ The capacity selection value describes only selection among complete globally op
 
 The participation row is the efficient balance snapshot; the ledger is the accounting audit source. `BID_SPEND` is written for each individual bid whose unit and assignment are successful. A successful pair therefore produces two separate debits, one for each original bid, and no debit for the summed score. Ledger and participation totals reconcile with individual persisted results.
 
-### 9.12 Panache mapping
+### 9.12 `employee_notification_settings
 
-Use explicit entities/repositories for bids with periods, reservations, allocation units, individual assignments, and audit JSON/fingerprints. Do not expose entities as DTOs. Fetch published unit/member projections without N+1 queries. Scheduler persistence inserts units, members/results, audit, and individual ledger effects atomically before completion.
+| Column | Type | Rules |
+|---|---|---|
+| `id` | `bigint` | PK |
+| `employee_id` | `bigint` | FK, not null, unique |
+| `bid_reminders_enabled` | `boolean` | not null, default `false` |
+| `bid_reminder_start_weekday` | `varchar(16)` | not null, default `MONDAY`; Monday–Friday only |
+| `created_at` | `timestamptz` | not null |
+| `updated_at` | `timestamptz` | not null |
+
+The row may be created lazily; absence has the same external meaning as disabled with `MONDAY` retained as the default. Disabling reminders changes only the enabled flag and preserves the weekday and subscriptions.
+
+### 9.13 `web_push_subscription
+
+| Column | Type | Rules |
+|---|---|---|
+| `id` | `bigint` | PK |
+| `employee_id` | `bigint` | FK, not null |
+| `endpoint_hash` | `char(64)` | not null, unique; SHA-256 identity for safe matching |
+| `endpoint` | `text` | required while active; validated HTTPS capability URL |
+| `p256dh_key` | `text` | required while active |
+| `auth_key` | `text` | required while active |
+| `expires_at` | `timestamptz` | nullable browser-reported expiry |
+| `device_label` | `varchar(120)` | not null; sanitized best-effort description, not trusted identity |
+| `status` | `varchar(20)` | not null; `ACTIVE`, `USER_REMOVED`, or `INVALID` |
+| `last_seen_at` | `timestamptz` | not null; refreshed by current-device registration |
+| `last_successful_push_at` | `timestamptz` | nullable; vendor acceptance, not proof of display |
+| `invalidated_at` | `timestamptz` | nullable |
+| `created_at` | `timestamptz` | not null |
+| `updated_at` | `timestamptz` | not null |
+
+Index active subscriptions by employee. Endpoint and key material are capability-bearing secrets. A user removal or permanent vendor rejection deactivates the row and SHOULD clear usable endpoint/key material while retaining only the hash and non-sensitive audit metadata. Re-registration may safely reactivate/upsert the same employee/hash after validating a fresh browser subscription; an endpoint already bound to a different employee is never silently reassigned.
+
+### 9.14 `bid_reminder_suppression
+
+| Column | Type | Rules |
+|---|---|---|
+| `id` | `bigint` | PK |
+| `round_id` | `bigint` | FK, not null |
+| `employee_id` | `bigint` | FK, not null |
+| `created_at` | `timestamptz` | not null |
+
+Unique `(round_id, employee_id)`. Rows are immutable and are never deleted or bypassed through the application. A suppression affects only its round.
+
+### 9.15 `bid_reminder_dispatch
+
+| Column | Type | Rules |
+|---|---|---|
+| `id` | `bigint` | PK |
+| `round_id` | `bigint` | FK, not null |
+| `employee_id` | `bigint` | FK, not null |
+| `business_date` | `date` | not null; date in the round's business zone |
+| `scheduled_for` | `timestamptz` | not null; logical configured trigger instant |
+| `status` | `varchar(20)` | not null; `PROCESSING`, `COMPLETED`, `PARTIAL`, or `FAILED` |
+| `subscription_count` | `integer` | not null, `>= 1` |
+| `accepted_count` | `integer` | not null, default `0`, `>= 0` |
+| `failed_count` | `integer` | not null, default `0`, `>= 0` |
+| `completed_at` | `timestamptz` | nullable |
+| `created_at` | `timestamptz` | not null |
+
+Unique `(round_id, employee_id, business_date)`. Checks keep counts and terminal status coherent. The row is the logical idempotency claim and operational record; it does not imply that a vendor-accepted notification was displayed.
+
+### 9.16 `web_push_delivery_attempt`
+
+| Column | Type | Rules |
+|---|---|---|
+| `id` | `bigint` | PK |
+| `dispatch_id` | `bigint` | FK, not null |
+| `push_subscription_id` | `bigint` | FK, not null |
+| `outcome` | `varchar(24)` | not null; `ACCEPTED`, `TEMPORARY_FAILURE`, or `PERMANENT_FAILURE` |
+| `provider_status` | `integer` | nullable, safe HTTP status only |
+| `attempted_at` | `timestamptz` | not null |
+
+Unique `(dispatch_id, push_subscription_id)`. Never persist response bodies, endpoint URLs, encryption keys, payload ciphertext, or vendor correlation data that may contain secrets.
+
+### 9.17 Panache mapping
+
+Use explicit entities/repositories for bids with periods, reservations, allocation units, individual assignments, audit JSON/fingerprints, notification settings, subscriptions, suppressions, and dispatch/attempt records. Do not expose entities as DTOs. Fetch published unit/member projections and notification eligibility without N+1 queries. Round processing inserts units, members/results, audit, and individual ledger effects atomically before completion; reminder dispatch persistence uses separate short transactions around external network calls.
 
 ## 10. Liquibase
 
@@ -512,6 +633,7 @@ Use explicit entities/repositories for bids with periods, reservations, allocati
 - `db/changelog/db.changelog-changes.yaml` is the second-level aggregate changelog. It includes ordered change files from `db/changelog/changes/`; the deployed changelog begins with `changes/001-initial-schema.yaml`. Future versioned schema or data changes are added as new, sequentially named files and included from this aggregate rather than directly from the master changelog.
 - All changesets in the version 1.2 baseline are immutable for version 1.3. Use one or more new sequential change files to add `bid.attendance_period`, create/backfill `allocation_unit`, link/reshape individual results, and extend audit data. Existing bids become `FULL_DAY`; every existing assignment becomes a one-member `SINGLE` unit preserving outcome/order. Historical pairing audit is the canonical empty value, and any prior final random value is preserved as capacity-selection audit. Existing completed rounds, ledgers, fingerprints, and algorithm versions are never recalculated or labeled half-day-aware.
 - Apply the migration in safe stages: add nullable/defaulted structures, backfill and validate existing data, then enforce new constraints. Any legacy ranking/audit columns needed to explain deployed history may be retained read-only; new version 1.3 writes use the normalized allocation-unit model.
+- The half-day version 1.3 implementation and its migrations are already committed before this second version 1.3 feature. Do not rewrite those committed changesets for Web Push. Append one or more newly numbered version 1.3 change files for notification settings, subscriptions, suppressions, dispatches, and attempts. Existing employees default to reminders disabled with Monday as the effective start day; no subscription, suppression, or delivery rows are synthesized.
 - `db/changelog/grant-permissions.yaml` contains the separate `set-permissions` changeset with `runAlways: true`. It runs after all versioned changes and executes `db/sql/grant-permissions.sql` as one PostgreSQL block with statement splitting disabled and comments retained. The SQL grants `SELECT`, `INSERT`, `UPDATE`, and `DELETE` on every non-Liquibase table in the `public` schema and `USAGE` on every sequence in that schema to the role supplied through the Liquibase `${applicationUser}` change-log parameter. The migrator must have authority to issue those grants.
 - The Quarkus Liquibase configuration MUST point to `db/changelog/db.changelog-master.yaml` and provide `applicationUser` from the configured application database username. Permission application therefore covers newly created tables and sequences on every migration run without mixing permission logic into individual versioned change files.
 - A separate idempotent application bootstrap mechanism creates the first bidding round; environment-specific employees and runtime round data MUST NOT be inserted by production changelogs.
@@ -576,9 +698,9 @@ This endpoint creates and emails a code only when activation is required and no 
 
 ```text
 Content-Type: application/x-www-form-urlencoded
-
-j_username=alex%40example.com&j_password=user-entered-password
 ```
+j_username=alex%40example.com&j_password=user-entered-password
+
 
 This is Quarkus's built-in form-authentication endpoint, not a custom Jakarta REST resource. On success it returns `200` and sets the encrypted persistent authentication cookie for both PWA and Android. Incorrect credentials return a generic `401`. Redirect locations are disabled for the SPA/API clients.
 
@@ -638,7 +760,81 @@ Returns resolved profile data and no other employee's private data:
 
 `isAdmin` is loaded from the current employee database row and controls role-aware presentation only; backend admin endpoints independently enforce and revalidate administrator status.
 
-### 11.4 Administrative seat reservations
+### 11.4 Notification settings and devices
+
+All endpoints require authentication. State-changing requests require the CSRF cookie/header contract. The acting employee always comes from `SecurityIdentity`; no request accepts an employee ID.
+
+`GET /api/settings/notifications
+
+```json
+{
+  "bidRemindersEnabled": true,
+  "bidReminderStartWeekday": "WEDNESDAY",
+  "schedule": {
+    "systemEnabled": true,
+    "localTime": "10:00",
+    "timeZone": "Europe/Berlin",
+    "weekdays": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"]
+  },
+  "webPushApplicationServerKey": "base64url-public-vapid-key",
+  "currentRound": {
+    "roundId": 18,
+    "cutoffAt": "2026-08-07T20:00:00Z",
+    "suppressed": false,
+    "suppressionAvailable": true
+  },
+  "devices": [{
+    "id": 12,
+    "label": "iPhone · Home Screen web app",
+    "registeredAt": "2026-08-03T08:40:00Z",
+    "lastSeenAt": "2026-08-04T09:55:00Z",
+    "lastSuccessfulPushAt": null
+  }]
+}
+```
+
+Only active devices are returned. `webPushApplicationServerKey` is the VAPID public key and is not secret. `schedule.systemEnabled` exposes only operational availability, not secrets; the UI clearly reports when reminder dispatch is disabled at deployment level. The backend does not claim that a listed remote device still has OS permission; the current browser combines this response with local feature detection, `Notification.permission`, and its current `PushManager` subscription. When no settings row exists, return disabled and `MONDAY`. `currentRound` is null when no open round exists.
+
+`PUT /api/settings/notifications
+
+```json
+{
+  "bidRemindersEnabled": true,
+  "bidReminderStartWeekday": "WEDNESDAY"
+}
+```
+
+Both fields are required; the weekday is one of Monday through Friday. The operation atomically creates/replaces the employee preference and returns the authoritative settings representation. Disabling does not delete subscriptions or round suppressions. Enabling does not request browser permission or create a subscription.
+
+`POST /api/settings/notifications/devices
+
+```json
+{
+  "endpoint": "https://browser-push-service.example/subscription/capability-token",
+  "keys": {
+    "p256dh": "base64url-key",
+    "auth": "base64url-secret"
+  },
+  "expirationTime": null,
+  "deviceLabel": "iPhone · Home Screen web app"
+}
+```
+
+This upserts the authenticated employee's current browser subscription by endpoint hash and returns `201 Created` for a new device or `200 OK` for a refresh/reactivation, with the non-secret device representation and `Location`. Validate URL, field sizes, key encodings, expiry, and sanitized label. Never echo endpoint or key material. An endpoint bound to another employee returns a generic conflict and is not reassigned.
+
+`DELETE /api/settings/notifications/devices/{deviceId}
+
+Removes/deactivates only the authenticated employee's device and returns `204 No Content`; an unknown or foreign ID returns non-enumerating `404`. This is distinct from disabling reminders globally.
+
+`POST /api/settings/notifications/bid-reminders/current-round/suppression
+
+```json
+{"roundId": 18}
+```
+
+After the in-app confirmation, create the immutable employee/round suppression and return `204 No Content`. Repeating the same request is idempotent. A stale/non-open round or an employee who has already placed a positive bid returns `409` with refreshed state. There is deliberately no DELETE/undo endpoint.
+
+### 11.5 Administrative seat reservations
 
 All operations in this section require authentication, the `ADMIN` role, and a current database recheck of `employee.is_admin`. State-changing operations also require the CSRF cookie/header contract.
 
@@ -681,7 +877,7 @@ Creation returns `201 Created`, a `Location` header, and the authoritative reser
 
 Deletion returns `204 No Content`. It is allowed only while the reservation is mutable. An unknown ID returns `404`; a reservation whose cutoff/state makes it immutable returns `409`. The service uses the stored target date and never accepts a client-supplied date for deletion.
 
-### 11.5 Bidding context
+### 11.6 Bidding context
 
 `GET /api/bidding/current`
 
@@ -721,7 +917,7 @@ Deletion returns `204 No Content`. It is allowed only while the reservation is m
 
 The response contains all five dates. `attendancePeriod` is the saved value for a positive bid and `FULL_DAY` for a zero/no-bid draft. `seatCapacity` is physical capacity and each day satisfies `assignableSeatCapacity = seatCapacity - reservedSeatCount`; these reservation fields remain read-only. `availableToBid` is the employee's uncommitted token amount, not physical-seat availability or post-allocation balance, and attendance period never changes it. `serverTime` supports countdown display; `cutoffAt` is authoritative.
 
-### 11.6 Replace bids
+### 11.7 Replace bids
 
 `PUT /api/bidding/current/bids`
 
@@ -743,7 +939,7 @@ Semantics:
 - On success return `200` with the same authoritative shape as `GET /api/bidding/current`.
 - Bidding endpoints never accept an email, employee ID, balance, allocation result, or token-spend decision from the client; the acting employee always comes from Quarkus `SecurityIdentity`.
 
-### 11.7 Published assignments
+### 11.8 Published assignments
 
 `GET /api/assignments/latest`
 
@@ -797,11 +993,11 @@ Top-level `seatCapacity` is physical capacity. `occupiedSeatCount` counts succes
 
 The API exposes the persisted unit grouping and combined score needed to explain pairing, but not optimiser/audit internals. For a globally resolved exact-score boundary group, successful units appear above the physical-seat boundary and unsuccessful units below it in immutable unit/member order.
 
-### 11.8 Help
+### 11.9 Help
 
 Help content SHOULD be bundled with Flutter for availability without another authenticated call. If centrally managed later, use `GET /api/public/help` with versioned/sanitized content.
 
-### 11.9 Error contract
+### 11.10 Error contract
 
 Use `application/problem+json`:
 
@@ -822,11 +1018,11 @@ Status mapping:
 
 | Status | Use |
 |---|---|
-| `400` | malformed/invalid values, dates, duplicates, negatives, total over balance, invalid reservation date/count/description/range |
+| `400` | malformed/invalid values, dates, duplicates, negatives, total over balance, invalid reservation date/count/description/range, invalid reminder weekday, push endpoint, key, expiry, or device label |
 | `401` | invalid credentials; missing, invalid, or expired Quarkus form-authentication cookie |
 | `403` | authenticated request lacks required CSRF proof or administrator authorization, or its origin is rejected |
-| `404` | no published/open resource or reservation when applicable |
-| `409` | stale round, cutoff passed, immutable/duplicate reservation, round processing, pessimistic lock timeout/concurrent update |
+| `404` | no published/open resource, reservation, or employee-owned registered device when applicable |
+| `409` | stale round, cutoff passed, immutable/duplicate reservation, round processing, pessimistic lock timeout/concurrent update, push endpoint ownership conflict, or inapplicable reminder suppression |
 | `429` | authentication/code request, resend, verification, or login rate limit exceeded |
 | `500` | unexpected server failure, without sensitive details |
 | `503` | temporary database/service unavailability |
@@ -865,6 +1061,7 @@ bidding/         bid queries, validation, replacement
 reservation/     admin authorization, dated reservation lifecycle, capacity calculation
 allocation/      half-day pairing, unit construction/ranking, global fairness, result mapping
 tokens/          participation balances and ledger
+notification/    preferences, device subscriptions, Web Push delivery, suppression, reminder scheduler
 resource/        REST resource interfaces only
 resource/impl/   REST resource implementation classes
 dto/             REST request/response DTOs and problem representations
@@ -888,17 +1085,20 @@ The core optimiser and fairness logic MUST be pure domain logic without database
 
 Domain services own transactions; resource implementations remain thin. Inject `Clock` and labeled random-selection abstractions for majority-boundary choice, equivalent pair composition, and final global solution. Tests control each choice independently. Production uses cryptographically secure randomness and persists every choice.
 
+The `notification/` package MUST use a maintained standards-based Java Web Push implementation supporting encrypted payloads and VAPID; do not implement Web Push encryption or signing primitives in application code. Separate eligibility selection, idempotent dispatch claiming, payload construction, vendor transport, response classification, subscription invalidation, and REST preference/device management so each is independently testable. Inject the push transport in tests. The reminder scheduled method coordinates the service and contains no REST or UI logic.
+
 ### 12.4 Validation
 
-Use Bean Validation for shape constraints and domain validation for cross-field/state rules. The backend repeats all client checks. Bid validation includes attendance enum/default semantics and strips period state when zero is normalized away. Reservation validation remains transactional. Allocation-unit validation rejects duplicate membership, invalid pair periods/cardinality, inconsistent score/outcome, and noncanonical fairness identities.
+Use Bean Validation for shape constraints and domain validation for cross-field/state rules. The backend repeats all client checks. Bid validation includes attendance enum/default semantics and strips period state when zero is normalized away. Reservation validation remains transactional. Allocation-unit validation rejects duplicate membership, invalid pair periods/cardinality, inconsistent score/outcome, and noncanonical fairness identities. Notification validation covers the Monday–Friday preference, current-round suppression state, bounded device labels, base64url subscription keys, optional expiry, HTTPS endpoint structure, DNS/address/redirect SSRF defenses, employee ownership, and coherent dispatch/attempt outcomes.
 
 ### 12.5 OpenAPI and health
 
 - Publish OpenAPI for all REST DTOs and problem responses. The REST interfaces in `resource` are the authoritative source of endpoint-level OpenAPI metadata; contract tests MUST verify that annotations inherited through `resource.impl` produce the expected OpenAPI document.
 - Define one OpenAPI cookie security scheme for the Quarkus form-authentication cookie. Public operations declare no authentication requirement; protected operations document the cookie scheme and `X-CSRF-TOKEN` header where relevant. `/j_security_check` is a Quarkus framework endpoint and is documented separately because it is not declared by a resource interface.
 - Admin resource interfaces declare the `ADMIN` authorization requirement, CSRF header on mutations, and `403`/`409` problem responses. UI visibility is not a security boundary.
+- Notification-setting resource interfaces document synchronized preferences, registered-device metadata, CSRF-protected subscription/suppression mutations, and all validation/conflict responses without exposing subscription secrets.
 - Provide liveness and readiness; readiness verifies database connectivity and successful Liquibase state.
-- Scheduler failure is logged/observed but MUST NOT leak details to clients.
+- Scheduler or push-provider failure is logged/observed but MUST NOT leak secrets or internal details to clients. External push-service availability is not a readiness dependency.
 
 ## 13. Flutter client specification
 
@@ -911,6 +1111,8 @@ Routes:
 ```text
 /assignments   initial authenticated route
 /bids
+/settings
+/settings/reminders/skip   authenticated confirmation/deep-link route
 /admin/reservations   desktop PWA administrators only
 /help
 /login
@@ -942,7 +1144,7 @@ Quarkus MUST serve `index.html` as an SPA fallback for client routes while exclu
 - Mobile uses a two-item tab bar/segmented navigation and MAY allow horizontal swipe; swipe is never the only mechanism.
 - The admin destination and route are not shown in compact/mobile PWA layouts and are absent from the Android application, even for an administrator account. Direct compact-web navigation to `/admin/reservations` shows a non-sensitive desktop-required message rather than reservation controls.
 - Compact layouts use a hamburger menu. Wider layouts use an equivalent conventional menu.
-- The menu contains **Help** and conditionally **Get the Android app**.
+- The menu always contains **Settings** and **Help**, and conditionally **Get the Android app**. Settings is available to every authenticated user on desktop, compact web, and supported native clients.
 
 ### 13.4 Seat assignments view
 
@@ -989,7 +1191,7 @@ The view displays:
 - one auto-distribution selector per day;
 - **Auto-distribute** and **Save bids** actions;
 - exact cutoff date/time, `Europe/Berlin` (or configured zone), and a periodically refreshed relative countdown;
-- Android-only reminder icon.
+- when opened from a reminder, a non-intrusive in-app affordance offering **Place bids** and **Skip reminders this week** until the user acts or dismisses the local affordance.
 
 Draft behavior:
 
@@ -1019,11 +1221,38 @@ Auto-distribution:
 5. Resulting values become ordinary editable values.
 6. If `share == 0`, do not modify fields and explain that too few tokens remain.
 
-Load current reservation information whenever the bidding context is opened, after a successful save, when the app resumes/returns to the page, and through existing explicit retry/refresh behavior. Real-time push is not required. Refreshing reservation metadata MUST preserve an unsaved local bid draft when the round ID has not changed; if the round changed, use the existing stale-round handling rather than applying the draft silently.
+Load current reservation information whenever the bidding context is opened, after a successful save, when the app resumes/returns to the page, and through existing explicit retry/refresh behavior. Real-time delivery of reservation changes is not required and is unrelated to bid-reminder Web Push. Refreshing reservation metadata MUST preserve an unsaved local bid draft when the round ID has not changed; if the round changed, use the existing stale-round handling rather than applying the draft silently.
 
 On `409`, preserve the draft, refresh context, and explain whether cutoff or a concurrent/stale round caused failure. Never silently apply a draft to another round.
 
-### 13.6 Administrative seat reservations
+### 13.6 Settings and Web Push enrollment
+
+The authenticated Settings page is available on desktop and mobile. Notification preferences are account-level and therefore display the same authoritative enabled state and start weekday everywhere.
+
+The page initially shows a **Bid reminders enabled** toggle, off by default. When off, reminder schedule, enrollment, and device controls are hidden. Switching it off updates the server preference but does not unsubscribe any device or remove the saved start weekday. Switching it on reveals:
+
+- a **Start reminders on** dropdown containing Monday through Friday, defaulting to Monday;
+- explanatory text that one reminder is sent at the application-wide time on the selected day and every following weekday until a positive bid is saved or the round is suppressed;
+- the configured local reminder time and shared business time zone as read-only information;
+- a current-device status and, when appropriate, **Enable notifications on this device**;
+- all active registered devices with best-effort labels, registration/last-seen dates, optional last vendor-accepted push date, and an individually confirmed **Remove device** action;
+- a warning when reminders are globally enabled but no active device is registered.
+
+If the deployment-level reminder scheduler is disabled, show a non-sensitive unavailable message and do not imply that reminders will be delivered; stored preferences and subscriptions remain visible/manageable according to the enabled-toggle rules.
+
+The global toggle MUST NOT itself subscribe a browser. **Enable notifications on this device** performs capability detection, and its direct tap/click initiates the browser permission request and `PushManager.subscribe` call. Only after permission and subscription succeed does the client register the result with the backend. Permission denial leaves the account preference intact, shows platform-appropriate instructions, and never repeatedly prompts automatically.
+
+Use feature detection for service workers, `PushManager`, and notification display rather than making browser names a security or capability decision. Platform/display-mode hints MAY tailor guidance:
+
+- On iOS/iPadOS, Web Push requires a supported OS and a Home Screen web app. If unavailable in an ordinary browser context, explain how to add and launch the app from the Home Screen; never claim enrollment succeeded merely because an icon exists.
+- On supported Android browsers, enrollment works through Web Push without a native application. PWA installation is recommended for the app-like experience but is not a backend requirement.
+- A desktop browser may configure the synchronized account preference without registering itself, or may register as another delivery device if it supports Web Push and the user explicitly chooses to do so.
+
+The current client reconciles its local `PushManager` subscription with the backend when Settings opens and after service-worker/subscription changes. It never displays another device as having verified OS permission. Removing a device prevents further server sends to it; globally disabling reminders merely pauses sends to all retained devices.
+
+The reminder deep link opens `/settings/reminders/skip` or the bidding page with the relevant round context. **Skip reminders this week** always shows a confirmation explaining that suppression lasts for the current bidding round, cannot be undone, and automatically clears by scope for the next round. The client posts the authoritative current `roundId`; stale, completed, or already-satisfied state is refreshed and explained rather than suppressed silently.
+
+### 13.7 Administrative seat reservations
 
 This page exists only in the desktop/wide PWA and only when `/api/me` reports `isAdmin: true`. The client-side check controls presentation; every backend call still enforces `ADMIN` and rechecks the database flag.
 
@@ -1039,7 +1268,7 @@ The page provides:
 
 The page provides no editing: an admin deletes and recreates a mutable reservation. It contains no employee list and no administrator-management control. After a successful mutation it reloads authoritative server state. A `403` removes the admin destination from the current UI state and returns to a core page; a `409` refreshes the affected reservation and explains that cutoff, processing, or a concurrent action made the change unavailable.
 
-### 13.7 Help content
+### 13.8 Help content
 
 Help MUST explain:
 
@@ -1054,37 +1283,42 @@ Help MUST explain:
 - half-day badges, grouped complementary pairs, individual versus combined tokens, and why assigned employee count may exceed occupied seats;
 - reserved seats reducing the number available for bidding, with reserved counts, assignable capacity, and public descriptions shown both while bidding and in published assignment cards;
 - surplus/unassigned seats being outside application control;
-- Android reminders where relevant.
+- account-level bid-reminder preferences, the Monday–Friday start-day behavior, positive-bid stopping rule, per-device enrollment, multiple-device delivery, global disabling without unregistration, round-only suppression, and best-effort delivery;
+- iPhone Home Screen installation/permission requirements, Android and desktop enrollment, notification/system-setting troubleshooting, and removal of a registered device.
 
 End-user help MUST NOT use implementation terminology such as bipartite matching, optimisation objectives, or lexicographic max-min fairness, and MUST NOT imply that each day's boundary tie is drawn independently.
 
-### 13.8 Android app download promotion
+### 13.9 Android app download promotion
 
 When the PWA detects an Android browser, it MAY show **Get the Android app** in the menu and a non-intrusive footer when space permits. It MUST not displace core controls. Hide it in the native app. Detection is progressive enhancement, not a business/security rule, and the target SHOULD be a managed distribution/store page rather than a raw APK.
 
-### 13.9 Accessibility and localization
+### 13.10 Accessibility and localization
 
 - Support keyboard navigation, screen readers, scalable text, touch targets, focus indicators, and WCAG AA contrast.
 - Never communicate status by color alone.
 - Dates are presented as agreed (`dd/MM`) while weekday labels and prose are localizable.
 - Store/transport no locale-specific numeric formats; token values are integers.
 
-### 13.10 PWA behavior
+### 13.11 PWA behavior
 
 - Provide a valid manifest, icons, service worker, and installability metadata.
+- Extend the production service worker to receive Web Push while preserving Flutter application-shell caching and upgrade behavior. Every received push is immediately shown as a user-visible notification; silent/background-only push is prohibited.
+- Notification payload handling supports a generic title/body, round identifier, safe same-origin bidding/confirmation paths, and best-effort action identifiers. Validate payload type/version and ignore unsafe or unknown URLs/actions.
+- `notificationclick` closes the notification, focuses an existing same-origin application window when possible or opens one otherwise, and navigates to the safe route. Unsupported custom actions fall back to opening the ordinary bidding/reminder UI.
+- Keep service-worker caching, push, notification-click, and subscription lifecycle logic compatible across upgrades. Reconcile the current subscription on authenticated Settings entry rather than relying exclusively on `pushsubscriptionchange`, which is not universal.
 - Cache the application shell, not authenticated API responses containing personal data unless a deliberate secure strategy is implemented.
 - Core bidding requires connectivity; offline changes MUST NOT appear saved. Show offline state clearly.
 - Updates SHOULD prompt reload when a new app version is available and avoid mixing incompatible client/API versions.
 
-## 14. Native Android reminder
+## 14. Web Push delivery
 
-Only the native Android app shows the reminder icon in the current release. The Android client has no admin navigation, admin reservation route, or reservation-management UI; administrators still see public reservation information in ordinary assignment cards. The reminder icon opens a local configuration UI for:
+Version 1.3 reminders use standards-based Web Push for installed iPhone/iPad Home Screen web apps, compatible Android browsers/PWAs, and compatible desktop browsers. They do not depend on the optional native Android application, local device alarms, an open browser tab, or a continuously running Flutter process.
 
-- enabled/disabled;
-- one or more weekdays;
-- local device time.
+The backend signs requests with configured VAPID credentials and encrypts each payload for the target subscription. Browser-vendor push services perform final delivery. Use conservative TTL/urgency/topic values appropriate to a same-day reminder; a later reminder for the same employee/round/date must not create duplicate logical content. Vendor responses are classified into accepted, temporary failure, and permanent failure. Permanent expiry/removal responses invalidate the subscription; redirects are not followed blindly.
 
-The reminder is device-local, not synchronized to the backend. It uses the current device time zone and creates an Android notification that deep-links to **Place bids**. Prefer an inexact scheduled notification because this is a reminder, not an alarm clock; request notification permission when required and avoid exact-alarm permission unless later justified. Reschedule after reboot/time-zone changes if the chosen Flutter plugin requires it. The PWA hides this control.
+The initial user-visible template is title **Seat bidding reminder** and body **You have not placed your bids for next week yet.** Action labels are **Place bids** and **Skip reminders this week** where supported. Content is versioned in the payload so future clients can reject or safely fall back from unknown formats; it remains generic enough for lock-screen display.
+
+The optional native Android application has no device-local reminder requirement in version 1.3. If native push is added later, it should reuse the synchronized account preference, eligibility, suppression, and dispatch concepts through a platform-token adapter rather than introduce an independent reminder schedule. Android users can use the web application/PWA for the current Web Push feature.
 
 ## 15. Deployment
 
@@ -1093,7 +1327,7 @@ The reminder is device-local, not synchronized to the backend. It uses the curre
 1. Build Flutter web in release mode.
 2. Copy its output into Quarkus `META-INF/resources` during the build.
 3. Build the Quarkus container image with Jib using a Java 25-compatible runtime base image. The application MUST run on Java 25 inside the resulting container.
-4. Run one application container containing REST API, PWA assets, scheduler, ORM, and Liquibase.
+4. Run one application container containing REST API, PWA assets/service worker, allocation and reminder schedulers, Web Push sender, ORM, and Liquibase.
 5. Run PostgreSQL separately (container or managed service).
 
 No Node web server, Qute rendering, or separate PWA container is required. The Android APK/AAB is distributed separately.
@@ -1104,10 +1338,11 @@ No Node web server, Qute rendering, or separate PWA container is required. The A
 Browser/PWA ─┐
              ├─ HTTPS ─> Quarkus application container ─> PostgreSQL
 Android app ─┘              │
-                            └─ SMTP/TLS ─> company mail server
+                            ├─ SMTP/TLS ─> company mail server
+                            └─ HTTPS/Web Push ─> browser-vendor push services ─> registered devices
 ```
 
-Use TLS at a reverse proxy/platform boundary. The PWA calls same-origin relative URLs, so the application hostname is not compiled into it. Forwarded headers, secure-cookie handling, allowed-origin validation, and SPA fallback must be configured safely. The SMTP server must be reachable from the application container; mobile clients never connect to SMTP directly.
+Use TLS at a reverse proxy/platform boundary. The PWA calls same-origin relative URLs, so the application hostname is not compiled into it. Forwarded headers, secure-cookie handling, allowed-origin validation, and SPA fallback must be configured safely. The SMTP server and validated browser-vendor push endpoints must be reachable from the application container; mobile clients connect to neither directly. Network policy/firewalls MUST allow required push-service egress (including Apple Web Push endpoints for iPhone/iPad subscribers) without granting unrestricted access to private/internal address ranges.
 
 ### 15.3 Future multi-instance deployment
 
@@ -1124,10 +1359,21 @@ seat-bidding:
   tokens-per-round: 60
   carry-over-cap: 24
   seat-capacity: ${SEAT_CAPACITY}
+  time-zone: "${SEAT_BIDDING_TIME_ZONE:Europe/Berlin}"
   scheduler:
-    cron: "0 0 22 ? * FRI"
-    time-zone: Europe/Berlin
-    enabled: true
+    cron: "${SEAT_ASSIGNMENT_CRON:0 0 22 ? * FRI}"
+    enabled: ${SEAT_ASSIGNMENT_SCHEDULER_ENABLED:true}
+  reminders:
+    schedule:
+      cron: "${BID_REMINDER_CRON:0 0 10 ? * MON-FRI}"
+      enabled: ${BID_REMINDER_SCHEDULER_ENABLED:true}
+    web-push:
+      vapid-subject: ${WEB_PUSH_VAPID_SUBJECT}
+      vapid-public-key: ${WEB_PUSH_VAPID_PUBLIC_KEY}
+      vapid-private-key: ${WEB_PUSH_VAPID_PRIVATE_KEY}
+      time-to-live: ${WEB_PUSH_TTL:12H}
+      connect-timeout: ${WEB_PUSH_CONNECT_TIMEOUT:5S}
+      request-timeout: ${WEB_PUSH_REQUEST_TIMEOUT:10S}
   lock-timeout: 5S
   authentication:
     activation:
@@ -1144,7 +1390,7 @@ seat-bidding:
       argon2-iterations: 2
       argon2-parallelism: 1
     allowed-web-origins: ${AUTH_ALLOWED_WEB_ORIGINS}
-
+```
 quarkus:
   http:
     auth:
@@ -1203,13 +1449,15 @@ quarkus:
       format: '%d{yyyy-MM-dd HH:mm:ss} %-5p [%c] (%t) %s%e%n'
       rotation:
         rotate-on-boot: false
-```
+
 
 OpenTelemetry MUST be configured as the common observability mechanism for logging, metrics, and tracing. Its SDK MUST be disabled by default with `quarkus.otel.sdk.disabled: true`, as shown above. Profile-specific files or deployment environment variables MAY enable it and configure OTLP exporters/endpoints, protocols, resource attributes, service identity, sampling, and signal-specific options. When enabled, logs MUST carry trace and span correlation identifiers where a tracing context exists. Enabling or disabling telemetry MUST require configuration only, not a code change.
 
 File logging MUST use the configuration shown above. It is disabled unless `LOG_TO_FILE=true`, writes to `/logs/application.log`, uses the specified format, and does not rotate merely because the application starts. The container deployment MUST mount a writable volume at `/logs` whenever file logging is enabled. Console logging remains available for normal container operation.
 
-Authentication durations, limits, password blocklist, Argon2id parameters, allowed web origins, Quarkus form-authentication settings, and mail settings MUST be validated at startup. Secrets such as the activation-code pepper, form-session encryption key, CSRF signature key, SMTP password, and password hashes must never be exposed through the public configuration endpoint. `application-test.yaml` MUST use Quarkus `MockMailbox` and MUST NOT contact a real SMTP server. The Android download URL may be exposed through the public configuration endpoint.
+The allocation and reminder `@Scheduled` methods both use `timeZone = "${seat-bidding.time-zone}"`; there are no schedule-specific time-zone properties. Their `cron` attributes reference their respective configured expressions. Both cron expressions, the shared `ZoneId`, feature flags, and reminder transport durations MUST be validated at startup. The default reminder cron fires exactly once at 10:00 Monday through Friday; no minute-based polling or catch-up scheduler is permitted.
+
+Authentication durations, limits, password blocklist, Argon2id parameters, allowed web origins, Quarkus form-authentication settings, mail settings, Web Push endpoint limits, and VAPID key/subject compatibility MUST be validated at startup. Secrets such as the activation-code pepper, form-session encryption key, CSRF signature key, VAPID private key, subscription material, SMTP password, and password hashes must never be exposed through the public configuration endpoint. The authenticated notification-settings response may expose only the VAPID public key. `application-test.yaml` MUST use Quarkus `MockMailbox`, an injected fake Web Push transport, and MUST NOT contact a real SMTP or push service. The Android download URL may be exposed through the public configuration endpoint.
 
 ## 17. Testing and verification
 
@@ -1228,6 +1476,10 @@ All backend tests and static-analysis/build jobs MUST execute with JDK 25 so loc
 - Deterministic unit-score classification of fixed winners, fixed losers, exact boundary candidates, and unresolved capacities.
 - Round-level optimiser objective hierarchy, canonicalisation, and deterministic injected final selector.
 - Friday cutoff, DST transitions, and target-date calculation.
+- Shared-business-zone evaluation for both schedules, Monday–Friday reminder start-day eligibility, positive-bid detection, round suppression, and absence of catch-up behavior.
+- Reminder eligibility combinations for disabled preferences, no active device, pre-start weekdays, positive bids, all-zero bid sets, deleted final bids, and current-round suppression.
+- Generic versioned push-payload construction, safe route/action validation, VAPID transport response classification, and permanent versus temporary subscription failure handling through an injected fake transport.
+- Dispatch idempotency, per-subscription failure isolation, count/status reconciliation, and no duplicate logical employee/round/business-date sends.
 - Zero normalization and complete bid replacement validation.
 - Email normalization and lookup behavior for known, unknown, activated, and unactivated employees.
 - Six-digit code generation including leading zeroes, keyed digest verification, expiry, failed-attempt exhaustion, resend invalidation, and cooldown calculations.
@@ -1307,6 +1559,7 @@ AF. **Input-order independence:** permuting half-day bids and equal-token candid
 
 - Liquibase from an empty database and constraint enforcement.
 - Upgrade from the version 1.2 schema adds bid periods and allocation units without modifying baseline changesets; existing bids become full-day and existing assignments become one-member single units with unchanged outcomes/order/audit versions.
+- Applying the notification migration after the already committed half-day version 1.3 changes leaves those changesets untouched, creates the notification tables/constraints/indexes, and gives every existing employee the effective disabled/Monday default without synthesizing subscriptions, suppressions, dispatches, or attempts.
 - Pessimistic serialization of simultaneous submissions for the same participant.
 - Independent employees can update concurrently.
 - Cutoff racing with bid update.
@@ -1329,6 +1582,11 @@ AF. **Input-order independence:** permuting half-day bids and equal-token candid
 - Quarkus form-cookie inactivity expiration, 24-hour renewal interval, persistence across restarts, malformed/tampered-cookie rejection, logout cookie removal, and global invalidation after encryption-key rotation.
 - `quarkus-rest-csrf` creates and signs the CSRF cookie and rejects missing, mismatched, malformed, and unsigned tokens on Jakarta REST JSON state-changing requests for both platforms; separate tests verify allowed-origin enforcement on `/j_security_check`.
 - Authentication `401`/`403`/`429` behavior and `Retry-After` where applicable.
+- Notification preference and device mutations are employee-scoped, CSRF-protected, and safe under concurrent registration/removal.
+- Reminder suppression is idempotent, immutable, round-scoped, rejects stale/non-open rounds, and cannot be bypassed by toggling the global preference.
+- The normal Quarkus reminder schedule fires from its configured cron in the shared zone, skips concurrent execution, creates one dispatch per eligible employee/date, sends to every snapshotted active subscription, isolates failures, and performs no polling/catch-up execution.
+- Push transport tests use a local fake/injected transport, never Apple, Google, Mozilla, or another real vendor. Accepted, temporary-failure, permanent-failure, timeout, malformed response, and invalidation paths reconcile dispatch/attempt rows.
+- Endpoint validation blocks non-HTTPS, credential-bearing, oversized, redirect-based, loopback, link-local, private-network, and unsafe DNS-resolution cases without leaking endpoint/key material.
 
 Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container SHOULD be reused across test classes or the test suite where supported to keep execution time reasonable, while database state MUST be isolated or reset between tests. The full Liquibase changelog MUST initialize the test database so tests exercise the production schema.
 
@@ -1337,6 +1595,7 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 - OpenAPI matches implemented DTOs.
 - Authentication start, form login, resend, verification, password creation, CSRF, logout, and cookie contracts match the documented OpenAPI operations and cookie security scheme.
 - `/api/me` administrator flag, admin list/create/delete authorization and CSRF contracts, validation limits, and `403`/`404`/`409` responses.
+- Notification settings return synchronized account preferences, shared-zone schedule information, public VAPID key, current-round suppression state, and non-secret active-device metadata. Preference, registration, removal, and suppression contracts enforce authentication, CSRF, ownership, validation, idempotency, and non-enumerating errors.
 - Bidding context and successful bid-replacement responses expose physical, reserved, and assignable capacities plus the optional public reservation description for every open-round date without exposing other employees' bids.
 - Bidding requests/responses enforce and round-trip attendance periods, including rollout omission as full day and invalid enum rejection.
 - Published assignments expose occupied seats, assigned employees, unit ID/type/rank/score, individual tokens/period/display rank, pair adjacency, and reservation capacities/description.
@@ -1352,15 +1611,18 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 - Independent three-state attendance controls: initial/load state, tap cycle, keyboard/screen-reader operation, no color-only state, zero-save reset, period preservation through auto-distribution/save/refresh, and unsaved-change handling.
 - Navigation by tap, keyboard, and swipe; unsaved-change handling.
 - Email-first login branching, password login, pending-code resume, resend cooldown, code verification, password requirements/confirmation, automatic form login after password creation, persistent-cookie restoration, inactivity expiry, CSRF recovery, logout, and generic authentication error states.
-- Platform tests ensure reminders are visible only on Android and Android promotion only in eligible PWA contexts.
+- Settings navigation and synchronized reminder controls appear in wide and compact PWA layouts; disabled state hides subordinate controls, enabled state shows weekday/schedule/device management, and Android promotion remains limited to eligible PWA contexts.
+- Web Push platform tests cover capability detection, current-device reconciliation, direct-gesture permission requests, granted/denied/default permission states, iOS Home Screen guidance, Android/desktop enrollment, multiple-device metadata, global disable without unsubscribe, individual removal, and no automatic repeated prompts.
+- Service-worker tests cover visible push display, safe payload/version handling, supported action routing, actionless fallback, focus-versus-open behavior, same-origin route enforcement, subscription reconciliation, and coexistence with Flutter caching/upgrades.
+- Reminder deep-link/widget tests cover positive-bid completion, all-zero behavior, confirmed immutable current-round suppression, stale/already-satisfied state, and the absence of an undo action.
 - Desktop PWA tests show the third admin destination and reservation CRUD UI only for admins at the wide breakpoint; compact web and Android never expose the controls or route.
 - Assignment widgets group pair members, show morning/afternoon badges only for half-day bids, suppress full-day badges, distinguish occupied seats from employee count, and preserve persisted unit/member order.
 - End-to-end flow: login, load bids, edit/save, cutoff simulation, published result.
 
 ### 17.5 Acceptance scenarios
 
-1. With a starting balance of 70 and a successful 20-token bid, an employee has 50 remaining; only 20 carries out when the cap is 20.
-2. With a starting balance of 70 and an unsuccessful 20-token bid, no tokens are deducted; the remaining balance is 70 and only 20 carries out when the cap is 20.
+1. With the maximum ordinary starting balance of 84 and a successful 20-token bid, an employee has 64 remaining; only 24 carries out when the cap is 24.
+2. With a starting balance of 84 and an unsuccessful 20-token bid, no tokens are deducted; the remaining balance is 84 and only 24 carries out when the cap is 24.
 3. With successful bids of 20 and 8 plus an unsuccessful bid of 15, exactly 28 tokens are deducted.
 4. At capacity 2 with bids `20, 10, 10`, the 20-token bidder is a fixed winner and exactly one 10-token bidder wins the boundary tie. If this is the round's only unresolved tie, its two complete alternatives are globally equivalent and the final selector chooses between them. The winners are charged 20 and 10 respectively, the unsuccessful 10-token bidder is charged zero, and the persisted result never changes.
 5. At capacity 4 with three positive bidders, all three win, all three bids are charged, and one seat remains unassigned.
@@ -1387,6 +1649,19 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 26. The same two employees paired across two dates share one canonical fairness identity even if their periods reverse. If either employee pairs with someone else, that is a different fairness identity.
 27. Published results group a pair's morning and afternoon employees adjacently, show their individual tokens and period badges, and may report more assigned employees than occupied seats. A full-day employee displays no period badge.
 28. Upgrading a populated version 1.2 database sets existing bids to full day and maps every historical assignment to a single allocation unit without changing completed results, ledger entries, published ordering, or historical algorithm version.
+29. A migrated or newly provisioned employee has reminders disabled and receives nothing until explicitly enabling the account preference and registering at least one device.
+30. An employee enables reminders and chooses Wednesday on desktop, then registers an iPhone Home Screen PWA. The synchronized settings remain Wednesday on both clients; only the phone receives delivery unless the desktop is separately enrolled.
+31. On iOS, opening the ordinary browser page shows Home Screen guidance instead of claiming notification support. Opening the installed supported PWA and tapping **Enable notifications on this device** invokes the system permission prompt; no prompt occurs automatically on page load.
+32. With a Wednesday preference and no positive bid, Monday and Tuesday generate no dispatch, while Wednesday at 10:00 does. Saving one positive bid before Thursday prevents Thursday and Friday reminders.
+33. Saving an all-zero bid set does not stop reminders. Saving a positive bid stops them; removing the last positive bid before a later eligible trigger makes the employee eligible again.
+34. Confirming **Skip reminders this week** creates one immutable suppression for the open round. No later trigger sends for that round, disabling/re-enabling does not bypass it, no undo is offered, and the next round is eligible again.
+35. Globally disabling reminders stops sends without removing registered devices or the selected weekday. Re-enabling reuses still-valid subscriptions without another permission prompt.
+36. An eligible employee with two active devices produces one logical daily dispatch and one attempt to each device. Removing one device stops future attempts to it without affecting the other.
+37. A supporting Android browser displays **Place bids** and **Skip reminders this week** actions. An iPhone/browser without custom actions opens the same in-app bidding/reminder choices when the notification body is tapped; suppression always requires authenticated confirmation.
+38. Repeated or concurrent invocation for the same trigger cannot create a second employee/round/business-date dispatch or duplicate device attempt. One device failure does not prevent another employee or device from being processed; a permanent rejection invalidates only that subscription.
+39. If the application is unavailable at the configured 10:00 trigger, no polling or later catch-up reminder is generated for that business date.
+40. Both the Friday allocation job and weekday reminder job use the single configured `Europe/Berlin` zone, remain at their intended local times across DST changes, and never use a client, JVM, or database default zone for business weekday decisions.
+41. Adding the notification feature after the committed half-day implementation appends new version 1.3 changesets without modifying the committed half-day changesets or any version 1.2 deployed changeset.
 
 ## 18. Observability and operations
 
@@ -1396,8 +1671,10 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 - Allocation metrics SHOULD include aggregate morning/afternoon/full-day bid counts, pair/single unit counts, and occupied-seat versus assigned-employee counts without identity labels. Pair compositions and bids are not logged or traced as attributes.
 - Authentication metrics SHOULD cover aggregate start/login/activation success and failure, rate limiting, email delivery failure, and form-cookie authentication failure without using email addresses or other high-cardinality personal identifiers as metric labels.
 - Admin reservation metrics SHOULD cover aggregate create/delete success, validation/authorization failure, and conflicts. Structured audit logs record reservation ID, target date, count, acting employee ID, and outcome, but not the public description.
-- OpenTelemetry traces SHOULD cover inbound REST requests, database operations, and scheduled round processing, with custom spans around deterministic classification, global optimisation, final selection, persistence, and accounting where they materially improve diagnosis. Do not record bids, candidate identities, random values, or complete solutions as span attributes.
-- Alert when a due round is not completed, no open successor exists, Liquibase fails, or ledger reconciliation fails.
+- Reminder metrics SHOULD cover scheduler execution status/duration, eligible employees, logical dispatches, attempted subscriptions, vendor-accepted sends, temporary/permanent failures, invalidated subscriptions, suppression creation, and preference/device mutations. Do not use employee IDs, device labels, endpoints, keys, round-specific eligibility sets, or vendor capability tokens as metric labels.
+- Reminder structured logs may include internal dispatch/round/subscription IDs, business date, classified outcome, safe provider status, and trace ID. They MUST NOT contain endpoint URLs, encryption/auth keys, VAPID private material, payload ciphertext, notification content beyond a stable template identifier, or user-agent strings.
+- OpenTelemetry traces SHOULD cover inbound REST requests, database operations, scheduled round processing, and scheduled reminder dispatch, with custom spans around deterministic classification, global optimisation, final selection, persistence, accounting, eligibility selection, and aggregate push transport where they materially improve diagnosis. Do not record bids, candidate identities, subscription material, random values, or complete solutions as span attributes.
+- Alert when a due round is not completed, no open successor exists, the reminder job fails, push permanent/temporary failure rates exceed an operational threshold, Liquibase fails, or ledger reconciliation fails.
 - Document a manual operational retry that calls the same idempotent processing service; do not repair results with ad hoc duplicate inserts.
 - Back up PostgreSQL. Published history and token ledger are business/audit data.
 
@@ -1411,8 +1688,9 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 6. Implement pure half-day selection/pairing/unit construction, unit-score classification, round-level fairness, labeled random selectors, normalized persistence/audit, ledger derivation, scheduler orchestration, and idempotency.
 7. Implement published unit/member assignments and problem/OpenAPI contracts, including reservation information.
 8. Build Flutter authentication, attendance-aware bidding, grouped assignments, desktop admin reservations, help, and responsive navigation.
-9. Add Android reminder/platform behavior and PWA promotion while excluding admin management from Android/compact layouts.
-10. Complete integration, migration, authorization, concurrency, accessibility, container, and end-to-end verification.
+9. Append the second version 1.3 migration and implement notification preferences, subscription lifecycle, round suppression, idempotent dispatch persistence, maintained Web Push transport, and the once-per-trigger Quarkus reminder scheduler without altering the committed half-day changes.
+10. Add the cross-platform Settings page, capability/permission enrollment, service-worker push/click behavior, safe reminder deep links/confirmation, help, and platform-specific iOS/Android guidance.
+11. Complete integration, migration, authorization, SSRF, concurrency, accessibility, service-worker, container, and end-to-end verification.
 
 ## 20. Future extensions
 
@@ -1423,7 +1701,8 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 - Per-day capacity, multiple offices, physical seat numbers, and office attendance management.
 - Additional administration functions, including employee provisioning, administrator-role management, reservation editing, post-cutoff overrides, and application settings.
 - Password change, forgotten-password recovery, operator-assisted reset UI, and self-service session management.
-- Server-driven PWA push reminders and synchronized reminder preferences.
+- Additional notification types, per-user reminder times or individual weekdays, weekend reminders, email/SMS fallback, notification localization, editable device names, and administrator notification controls.
+- Native Android push-token delivery integrated with the shared reminder preferences and suppression model.
 - Kubernetes StatefulSet deployment with ordinal-zero scheduler activation.
 - Historical browsing, analytics, exports, and privacy/retention controls beyond the latest published round.
 - Localization beyond the initial language and date convention.
@@ -1438,3 +1717,5 @@ Allocation completion requires individual token authority during pairing selecti
 The administration extension is complete when `is_admin` is manually maintainable but never application-manageable; backend authorization and current-database revalidation protect every admin operation; a newly numbered Liquibase migration preserves the deployed schema/data; desktop PWA admins can list, create, and delete valid reservations; compact web, ordinary users, and Android expose no management UI; cutoff makes reservations immutable; allocation uses reservation-derived assignable capacity; every employee sees read-only reservation counts, assignable capacity, and descriptions while bidding; published assignments show the same reservation information; and all migration, authorization, concurrency, capacity, UI, and acceptance tests in section 17 pass.
 
 The half-day extension is complete when independent accessible three-state controls round-trip through the API; deployed data migrates to full-day single units without historical changes; pairing, unit ranking, fairness, persistence, display, and charging satisfy sections 5–9; paired members are grouped with badges and individual bids; occupied seats are distinguished from assigned employees; and every half-day, integration, contract, Flutter, migration, and acceptance test in section 17 passes.
+
+The Web Push extension is complete when notification preferences are disabled by default and synchronize across clients; Monday–Friday start-day behavior, positive-bid completion, immutable round suppression, retained global-disable subscriptions, and multi-device delivery satisfy sections 5–14; the normal Quarkus job runs once per configured trigger in the shared business zone without polling/catch-up; subscription secrets and outbound endpoints are secured; iOS Home Screen, Android web, desktop, permission, service-worker, action/fallback, and safe deep-link flows work as specified; new changesets append after rather than modify the committed half-day work; fake-transport PostgreSQL tests cover dispatch idempotency and failure isolation; and all notification acceptance scenarios in section 17 pass.

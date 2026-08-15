@@ -13,6 +13,9 @@ class RoundConfigurationDefaultsTest {
             var yaml = new String(input.readAllBytes(), StandardCharsets.UTF_8);
             assertTrue(yaml.contains("tokens-per-round: ${TOKENS_PER_ROUND:60}"));
             assertTrue(yaml.contains("carry-over-cap: ${CARRY_OVER_CAP:24}"));
+            assertTrue(yaml.contains("time-zone: \"${SEAT_BIDDING_TIME_ZONE:Europe/Berlin}\""));
+            assertTrue(yaml.contains("cron: \"${SEAT_ASSIGNMENT_CRON:0 0 22 ? * FRI}\""));
+            assertTrue(yaml.contains("cron: \"${BID_REMINDER_CRON:0 0 10 ? * MON-FRI}\""));
         }
     }
 

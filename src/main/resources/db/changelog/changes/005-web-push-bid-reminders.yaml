@@ -1,0 +1,177 @@
+databaseChangeLog:
+  - changeSet:
+      id: 005-web-push-bid-reminders
+      author: chschroe
+      changes:
+        - createTable:
+            tableName: employee_notification_settings
+            columns:
+              - column: { name: id, type: bigint, autoIncrement: true, constraints: { primaryKey: true, primaryKeyName: pk_employee_notification_settings, nullable: false } }
+              - column: { name: employee_id, type: bigint, constraints: { nullable: false } }
+              - column: { name: bid_reminders_enabled, type: boolean, defaultValueBoolean: false, constraints: { nullable: false } }
+              - column: { name: bid_reminder_start_weekday, type: varchar(16), defaultValue: MONDAY, constraints: { nullable: false } }
+              - column: { name: created_at, type: timestamptz, defaultValueComputed: now(), constraints: { nullable: false } }
+              - column: { name: updated_at, type: timestamptz, defaultValueComputed: now(), constraints: { nullable: false } }
+        - addForeignKeyConstraint:
+            baseTableName: employee_notification_settings
+            baseColumnNames: employee_id
+            referencedTableName: employee
+            referencedColumnNames: id
+            constraintName: fk_notification_settings_employee
+        - addUniqueConstraint:
+            tableName: employee_notification_settings
+            columnNames: employee_id
+            constraintName: uq_notification_settings_employee
+        - createTable:
+            tableName: web_push_subscription
+            columns:
+              - column: { name: id, type: bigint, autoIncrement: true, constraints: { primaryKey: true, primaryKeyName: pk_web_push_subscription, nullable: false } }
+              - column: { name: employee_id, type: bigint, constraints: { nullable: false } }
+              - column: { name: endpoint_hash, type: char(64), constraints: { nullable: false } }
+              - column: { name: endpoint, type: text }
+              - column: { name: p256dh_key, type: text }
+              - column: { name: auth_key, type: text }
+              - column: { name: expires_at, type: timestamptz }
+              - column: { name: device_label, type: varchar(120), constraints: { nullable: false } }
+              - column: { name: status, type: varchar(20), constraints: { nullable: false } }
+              - column: { name: last_seen_at, type: timestamptz, constraints: { nullable: false } }
+              - column: { name: last_successful_push_at, type: timestamptz }
+              - column: { name: invalidated_at, type: timestamptz }
+              - column: { name: created_at, type: timestamptz, defaultValueComputed: now(), constraints: { nullable: false } }
+              - column: { name: updated_at, type: timestamptz, defaultValueComputed: now(), constraints: { nullable: false } }
+        - addForeignKeyConstraint:
+            baseTableName: web_push_subscription
+            baseColumnNames: employee_id
+            referencedTableName: employee
+            referencedColumnNames: id
+            constraintName: fk_push_subscription_employee
+        - addUniqueConstraint:
+            tableName: web_push_subscription
+            columnNames: endpoint_hash
+            constraintName: uq_push_subscription_endpoint_hash
+        - createIndex:
+            tableName: web_push_subscription
+            indexName: ix_push_subscription_employee_status
+            columns:
+              - column: { name: employee_id }
+              - column: { name: status }
+        - createTable:
+            tableName: bid_reminder_suppression
+            columns:
+              - column: { name: id, type: bigint, autoIncrement: true, constraints: { primaryKey: true, primaryKeyName: pk_bid_reminder_suppression, nullable: false } }
+              - column: { name: round_id, type: bigint, constraints: { nullable: false } }
+              - column: { name: employee_id, type: bigint, constraints: { nullable: false } }
+              - column: { name: created_at, type: timestamptz, defaultValueComputed: now(), constraints: { nullable: false } }
+        - addForeignKeyConstraint:
+            baseTableName: bid_reminder_suppression
+            baseColumnNames: round_id
+            referencedTableName: bidding_round
+            referencedColumnNames: id
+            constraintName: fk_reminder_suppression_round
+        - addForeignKeyConstraint:
+            baseTableName: bid_reminder_suppression
+            baseColumnNames: employee_id
+            referencedTableName: employee
+            referencedColumnNames: id
+            constraintName: fk_reminder_suppression_employee
+        - addUniqueConstraint:
+            tableName: bid_reminder_suppression
+            columnNames: round_id, employee_id
+            constraintName: uq_reminder_suppression_round_employee
+        - createIndex:
+            tableName: bid_reminder_suppression
+            indexName: ix_reminder_suppression_employee
+            columns:
+              - column: { name: employee_id }
+        - createTable:
+            tableName: bid_reminder_dispatch
+            columns:
+              - column: { name: id, type: bigint, autoIncrement: true, constraints: { primaryKey: true, primaryKeyName: pk_bid_reminder_dispatch, nullable: false } }
+              - column: { name: round_id, type: bigint, constraints: { nullable: false } }
+              - column: { name: employee_id, type: bigint, constraints: { nullable: false } }
+              - column: { name: business_date, type: date, constraints: { nullable: false } }
+              - column: { name: scheduled_for, type: timestamptz, constraints: { nullable: false } }
+              - column: { name: status, type: varchar(20), constraints: { nullable: false } }
+              - column: { name: subscription_count, type: integer, constraints: { nullable: false } }
+              - column: { name: accepted_count, type: integer, defaultValueNumeric: 0, constraints: { nullable: false } }
+              - column: { name: failed_count, type: integer, defaultValueNumeric: 0, constraints: { nullable: false } }
+              - column: { name: completed_at, type: timestamptz }
+              - column: { name: created_at, type: timestamptz, defaultValueComputed: now(), constraints: { nullable: false } }
+        - addForeignKeyConstraint:
+            baseTableName: bid_reminder_dispatch
+            baseColumnNames: round_id
+            referencedTableName: bidding_round
+            referencedColumnNames: id
+            constraintName: fk_reminder_dispatch_round
+        - addForeignKeyConstraint:
+            baseTableName: bid_reminder_dispatch
+            baseColumnNames: employee_id
+            referencedTableName: employee
+            referencedColumnNames: id
+            constraintName: fk_reminder_dispatch_employee
+        - addUniqueConstraint:
+            tableName: bid_reminder_dispatch
+            columnNames: round_id, employee_id, business_date
+            constraintName: uq_reminder_dispatch_round_employee_date
+        - createIndex:
+            tableName: bid_reminder_dispatch
+            indexName: ix_reminder_dispatch_employee
+            columns:
+              - column: { name: employee_id }
+        - createIndex:
+            tableName: bid_reminder_dispatch
+            indexName: ix_reminder_dispatch_status_date
+            columns:
+              - column: { name: status }
+              - column: { name: business_date }
+        - createTable:
+            tableName: web_push_delivery_attempt
+            columns:
+              - column: { name: id, type: bigint, autoIncrement: true, constraints: { primaryKey: true, primaryKeyName: pk_web_push_delivery_attempt, nullable: false } }
+              - column: { name: dispatch_id, type: bigint, constraints: { nullable: false } }
+              - column: { name: push_subscription_id, type: bigint, constraints: { nullable: false } }
+              - column: { name: outcome, type: varchar(24), constraints: { nullable: false } }
+              - column: { name: provider_status, type: integer }
+              - column: { name: attempted_at, type: timestamptz, constraints: { nullable: false } }
+        - addForeignKeyConstraint:
+            baseTableName: web_push_delivery_attempt
+            baseColumnNames: dispatch_id
+            referencedTableName: bid_reminder_dispatch
+            referencedColumnNames: id
+            constraintName: fk_push_attempt_dispatch
+        - addForeignKeyConstraint:
+            baseTableName: web_push_delivery_attempt
+            baseColumnNames: push_subscription_id
+            referencedTableName: web_push_subscription
+            referencedColumnNames: id
+            constraintName: fk_push_attempt_subscription
+        - addUniqueConstraint:
+            tableName: web_push_delivery_attempt
+            columnNames: dispatch_id, push_subscription_id
+            constraintName: uq_push_attempt_dispatch_subscription
+        - createIndex:
+            tableName: web_push_delivery_attempt
+            indexName: ix_push_attempt_subscription
+            columns:
+              - column: { name: push_subscription_id }
+        - sql:
+            comment: Enforce reminder preference, subscription, dispatch, and delivery state invariants.
+            sql: |
+              ALTER TABLE employee_notification_settings
+                ADD CONSTRAINT ck_notification_settings_weekday CHECK (bid_reminder_start_weekday IN ('MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY'));
+              ALTER TABLE web_push_subscription
+                ADD CONSTRAINT ck_push_subscription_status CHECK (status IN ('ACTIVE','USER_REMOVED','INVALID')),
+                ADD CONSTRAINT ck_push_subscription_material CHECK ((status = 'ACTIVE' AND endpoint IS NOT NULL AND p256dh_key IS NOT NULL AND auth_key IS NOT NULL AND invalidated_at IS NULL) OR (status <> 'ACTIVE' AND endpoint IS NULL AND p256dh_key IS NULL AND auth_key IS NULL AND invalidated_at IS NOT NULL));
+              ALTER TABLE bid_reminder_dispatch
+                ADD CONSTRAINT ck_reminder_dispatch_status CHECK (status IN ('PROCESSING','COMPLETED','PARTIAL','FAILED')),
+                ADD CONSTRAINT ck_reminder_dispatch_counts CHECK (subscription_count >= 1 AND accepted_count >= 0 AND failed_count >= 0 AND accepted_count + failed_count <= subscription_count),
+                ADD CONSTRAINT ck_reminder_dispatch_completion CHECK ((status = 'PROCESSING' AND completed_at IS NULL) OR (status <> 'PROCESSING' AND completed_at IS NOT NULL AND accepted_count + failed_count = subscription_count));
+              ALTER TABLE web_push_delivery_attempt
+                ADD CONSTRAINT ck_push_attempt_outcome CHECK (outcome IN ('ACCEPTED','TEMPORARY_FAILURE','PERMANENT_FAILURE')),
+                ADD CONSTRAINT ck_push_attempt_provider_status CHECK (provider_status IS NULL OR provider_status BETWEEN 100 AND 599);
+      rollback:
+        - dropTable: { tableName: web_push_delivery_attempt }
+        - dropTable: { tableName: bid_reminder_dispatch }
+        - dropTable: { tableName: bid_reminder_suppression }
+        - dropTable: { tableName: web_push_subscription }
+        - dropTable: { tableName: employee_notification_settings }

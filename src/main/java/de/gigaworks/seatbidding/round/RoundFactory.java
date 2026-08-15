@@ -22,34 +22,34 @@ import java.util.Map;
 
 @ApplicationScoped
 public class RoundFactory {
-    
+
     @Inject
     SeatBiddingConfiguration configuration;
-    
+
     @Inject
     RoundSchedule schedule;
-    
+
     @Inject
     BiddingRoundRepository rounds;
-    
+
     @Inject
     RoundDateRepository dates;
-    
+
     @Inject
     RoundParticipationRepository participations;
-    
+
     @Inject
     EmployeeRepository employees;
-    
+
     @Inject
     TokenLedgerRepository ledger;
-    
+
     @Inject
     SeatReservationRepository reservations;
-    
+
     public BiddingRoundEntity create(long sequenceNo, Instant opensAt, Instant cutoffSearchStart,
             BiddingRoundEntity predecessor, Map<Long, Integer> carryByEmployee) {
-        var zone = configuration.scheduler().timeZone();
+        var zone = configuration.timeZone();
         var cutoffAt = schedule.nextCutoff(configuration.scheduler().cron(), zone, cutoffSearchStart);
         var targetDates = schedule.targetDates(cutoffAt, zone);
         var existingReservations = reservations.findForDatesForUpdate(targetDates);
@@ -68,7 +68,7 @@ public class RoundFactory {
         round.predecessor = predecessor;
         rounds.persist(round);
         rounds.flush();
-        
+
         for (int i = 0; i < targetDates.size(); i++) {
             var date = new RoundDateEntity();
             date.round = round;
@@ -76,13 +76,13 @@ public class RoundFactory {
             date.ordinal = (short) (i + 1);
             dates.persist(date);
         }
-        
+
         for (var employee : employees.listAll()) {
             createParticipation(round, employee, carryByEmployee.getOrDefault(employee.id, 0), opensAt);
         }
         return round;
     }
-    
+
     public RoundParticipationEntity createParticipation(BiddingRoundEntity round,
             de.gigaworks.seatbidding.persistence.EmployeeEntity employee,
             int carriedIn, Instant occurredAt) {
@@ -102,7 +102,7 @@ public class RoundFactory {
         }
         return participation;
     }
-    
+
     private void addLedger(de.gigaworks.seatbidding.persistence.EmployeeEntity employee, BiddingRoundEntity round,
             LedgerType type, int amount, String key, Instant occurredAt) {
         if (amount == 0) {
@@ -117,5 +117,5 @@ public class RoundFactory {
         entry.occurredAt = occurredAt;
         ledger.persist(entry);
     }
-    
+
 }
