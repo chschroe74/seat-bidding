@@ -99,6 +99,8 @@ quarkus:
     user: 1000
     ports: 8080
   http:
+    static-resources:
+      max-age: 0
     same-site-cookie:
       "csrf-token":
         value: strict

@@ -4,10 +4,19 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
     test(
-        'Web Push worker preserves Flutter caching and validates action routes',
+        'Web Push worker owns its lifecycle and validates action routes',
         () {
             final worker = File('web/web_push_service_worker.js').readAsStringSync();
-            expect(worker, contains("importScripts('/flutter_service_worker.js')"));
+            expect(worker, isNot(contains('importScripts')));
+            expect(worker, contains('self.skipWaiting()'));
+            expect(worker, contains('self.clients.claim()'));
+            expect(worker, contains("'flutter-app-cache'"));
+            expect(worker, contains('caches.delete(LEGACY_FLUTTER_CACHE)'));
+            expect(worker, contains("'seat-bidding-standalone-worker-v1'"));
+            expect(worker, contains('firstStandaloneActivation'));
+            expect(worker, contains('client.navigate(client.url)'));
+            expect(worker, contains("addEventListener('fetch'"));
+            expect(worker, contains("cache: 'no-store'"));
             expect(worker, contains("addEventListener('push'"));
             expect(worker, contains('showNotification'));
             expect(worker, contains("addEventListener('notificationclick'"));
@@ -20,13 +29,17 @@ void main() {
     );
 
     test(
-        'Flutter bootstrap installs the Web Push wrapper before loading the app',
+        'Flutter bootstrap updates the Web Push worker and reloads replaced clients',
         () {
             final bootstrap = File('web/flutter_bootstrap.js').readAsStringSync();
             expect(
                 bootstrap,
-                contains("register('/web_push_service_worker.js', { scope: '/' })"),
+                contains("'/web_push_service_worker.js'"),
             );
+            expect(bootstrap, contains("updateViaCache: 'none'"));
+            expect(bootstrap, contains('registration.update()'));
+            expect(bootstrap, contains("addEventListener('controllerchange'"));
+            expect(bootstrap, contains('window.location.reload()'));
             expect(bootstrap, contains('_flutter.loader.load'));
             final index = File('web/index.html').readAsStringSync();
             expect(index, contains('push_bridge.js'));

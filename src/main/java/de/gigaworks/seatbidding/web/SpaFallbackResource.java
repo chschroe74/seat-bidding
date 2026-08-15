@@ -21,7 +21,9 @@ public class SpaFallbackResource {
             return Response.status(404).build();
         }
         try (stream) {
-            return Response.ok(stream.readAllBytes(), MediaType.TEXT_HTML_TYPE).build();
+            return Response.ok(stream.readAllBytes(), MediaType.TEXT_HTML_TYPE)
+                    .header("Cache-Control", "no-cache")
+                    .build();
         }
     }
     

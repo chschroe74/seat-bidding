@@ -1,9 +1,38 @@
-importScripts('/flutter_service_worker.js');
-
 const SEAT_PUSH_VERSION = 1;
 const SEAT_PUSH_TITLE = 'Seat bidding reminder';
 const SEAT_PUSH_BODY = 'You have not placed your bids for next week yet.';
 const SEAT_PUSH_ACTIONS = new Set(['PLACE_BIDS', 'SKIP_REMINDERS']);
+const LEGACY_FLUTTER_CACHE = 'flutter-app-cache';
+const STANDALONE_WORKER_MARKER = 'seat-bidding-standalone-worker-v1';
+
+self.addEventListener('install', (event) => {
+    event.waitUntil(self.skipWaiting());
+});
+
+self.addEventListener('activate', (event) => {
+    event.waitUntil((async () => {
+        const firstStandaloneActivation = !(await caches.has(STANDALONE_WORKER_MARKER));
+        await caches.delete(LEGACY_FLUTTER_CACHE);
+        await caches.open(STANDALONE_WORKER_MARKER);
+        await self.clients.claim();
+        if (firstStandaloneActivation) {
+            const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+            await Promise.all(windows.map((client) => client.navigate(client.url).catch(() => null)));
+        }
+    })());
+});
+
+self.addEventListener('fetch', (event) => {
+    const url = new URL(event.request.url);
+    const mutableApplicationShell = url.origin === self.location.origin
+        && event.request.method === 'GET'
+        && (event.request.mode === 'navigate'
+            || event.request.destination === 'script'
+            || event.request.destination === 'manifest');
+    if (mutableApplicationShell) {
+        event.respondWith(fetch(event.request, { cache: 'no-store' }));
+    }
+});
 
 function seatSafeRoute(value, fallback) {
     try {

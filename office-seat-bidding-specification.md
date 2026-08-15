@@ -1306,13 +1306,13 @@ When the PWA detects an Android browser, it MAY show **Get the Android app** in 
 ### 13.11 PWA behavior
 
 - Provide a valid manifest, icons, service worker, and installability metadata.
-- Extend the production service worker to receive Web Push while preserving Flutter application-shell caching and upgrade behavior. Every received push is immediately shown as a user-visible notification; silent/background-only push is prohibited.
+- Use one application-owned production service worker to receive Web Push. It MUST NOT import Flutter's deprecated generated service worker or depend on Flutter-managed application-shell caching. Every received push is immediately shown as a user-visible notification; silent/background-only push is prohibited.
 - Notification payload handling supports a generic title/body, round identifier, safe same-origin bidding/confirmation paths, and best-effort action identifiers. Validate payload type/version and ignore unsafe or unknown URLs/actions.
 - `notificationclick` closes the notification, focuses an existing same-origin application window when possible or opens one otherwise, and navigates to the safe route. Unsupported custom actions fall back to opening the ordinary bidding/reminder UI.
-- Keep service-worker caching, push, notification-click, and subscription lifecycle logic compatible across upgrades. Reconcile the current subscription on authenticated Settings entry rather than relying exclusively on `pushsubscriptionchange`, which is not universal.
-- Cache the application shell, not authenticated API responses containing personal data unless a deliberate secure strategy is implemented.
+- Keep service-worker activation, push, notification-click, and subscription lifecycle logic compatible across upgrades. A replacement worker activates promptly, claims existing clients, and causes at most one controlled reload of an already controlled client. The first standalone-worker migration also reloads existing windows once so clients running the previously deployed bootstrap can recover without manual cache clearing. Navigation and executable application-shell requests bypass stale HTTP cache while the worker controls the client. The worker registration bypasses the ordinary HTTP cache when checking its script and removes the legacy Flutter application-shell cache during migration. Reconcile the current subscription on authenticated Settings entry rather than relying exclusively on `pushsubscriptionchange`, which is not universal.
+- Authenticated API responses containing personal data MUST NOT be cached. Application-shell caching MAY be introduced only through a deliberate application-owned strategy that preserves immediate update compatibility.
 - Core bidding requires connectivity; offline changes MUST NOT appear saved. Show offline state clearly.
-- Updates SHOULD prompt reload when a new app version is available and avoid mixing incompatible client/API versions.
+- Mutable application-shell resources, including the HTML entry point, Flutter bootstrap, compiled application bundle, manifests, and service-worker script, MUST be served with immediate revalidation (`no-cache` or `max-age=0`). Updates MUST avoid mixing incompatible client/API versions and SHOULD activate without requiring users to clear browser data manually.
 
 ## 14. Web Push delivery
 
@@ -1330,6 +1330,7 @@ The optional native Android application has no device-local reminder requirement
 
 1. Build Flutter web in release mode.
 2. Copy its output into Quarkus `META-INF/resources` during the build.
+   Mutable application-shell resources are served with immediate browser revalidation; long-lived caching is permitted only for content-addressed immutable assets.
 3. Build the Quarkus container image with Jib using a Java 25-compatible runtime base image. The application MUST run on Java 25 inside the resulting container.
 4. Run one application container containing REST API, PWA assets/service worker, allocation and reminder schedulers, Web Push sender, ORM, and Liquibase.
 5. Run PostgreSQL separately (container or managed service).
@@ -1617,7 +1618,7 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 - Email-first login branching, password login, pending-code resume, resend cooldown, code verification, password requirements/confirmation, automatic form login after password creation, persistent-cookie restoration, inactivity expiry, CSRF recovery, logout, and generic authentication error states.
 - Settings navigation and synchronized reminder controls appear in wide and compact PWA layouts; disabled state hides subordinate controls, enabled state shows weekday/schedule/device management, and Android promotion remains limited to eligible PWA contexts.
 - Web Push platform tests cover capability detection, current-device reconciliation, direct-gesture permission requests, granted/denied/default permission states, iOS Home Screen guidance, Android/desktop enrollment, multiple-device metadata, global disable without unsubscribe, individual removal, and no automatic repeated prompts.
-- Service-worker tests cover visible push display, safe payload/version handling, supported action routing, actionless fallback, focus-versus-open behavior, same-origin route enforcement, subscription reconciliation, and coexistence with Flutter caching/upgrades.
+- Service-worker tests cover visible push display, safe payload/version handling, supported action routing, actionless fallback, focus-versus-open behavior, same-origin route enforcement, subscription reconciliation, standalone worker activation, one-time migration reload, legacy-cache removal, cache-bypassing update checks, controlled reload, and application-shell revalidation.
 - Reminder deep-link/widget tests cover positive-bid completion, all-zero behavior, confirmed immutable current-round suppression, stale/already-satisfied state, and the absence of an undo action.
 - Desktop PWA tests show the third admin destination and reservation CRUD UI only for admins at the wide breakpoint; compact web and Android never expose the controls or route.
 - Assignment widgets group pair members, show morning/afternoon badges only for half-day bids, suppress full-day badges, distinguish occupied seats from employee count, and preserve persisted unit/member order.
