@@ -9,7 +9,7 @@ import java.util.List;
 public class SeatAssignmentRepository implements PanacheRepositoryBase<SeatAssignmentEntity, Long> {
 
     public List<SeatAssignmentEntity> findForDate(long roundDateId) {
-        return list("roundDate.id = ?1 order by finalRank", roundDateId);
+        return list("roundDate.id = ?1 order by displayRank", roundDateId);
     }
 
     public List<SeatAssignmentEntity> findAssignedForRound(long roundId) {

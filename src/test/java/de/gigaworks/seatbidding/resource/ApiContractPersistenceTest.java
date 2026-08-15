@@ -40,6 +40,7 @@ import org.junit.jupiter.api.Test;
 @QuarkusTestResource(value = de.gigaworks.seatbidding.support.PostgresTestResource.class,
         restrictToAnnotatedClass = true)
 class ApiContractPersistenceTest {
+
     private static final String ORIGIN = "https://seat.test";
     private static final String PASSWORD = "a valid long password with spaces";
     @Inject EmployeeRepository employees;
@@ -65,7 +66,7 @@ class ApiContractPersistenceTest {
                 .then().statusCode(200).extract().asString();
         assertTrue(document.contains("formCookie"));
         var openApi = JsonPath.from(document);
-        assertEquals("1.2.0", openApi.getString("info.version"));
+        assertEquals("1.3.0", openApi.getString("info.version"));
         var schemas = openApi.getMap("components.schemas");
         var biddingProperties = (Map<?, ?>) ((Map<?, ?>) schemas.get("BiddingContext")).get("properties");
         assertTrue(biddingProperties.containsKey("seatCapacity"));
@@ -76,6 +77,20 @@ class ApiContractPersistenceTest {
         assertTrue(dayProperties.containsKey("reservedSeatCount"));
         assertTrue(dayProperties.containsKey("assignableSeatCapacity"));
         assertTrue(dayProperties.containsKey("reservationDescription"));
+        assertTrue(dayProperties.containsKey("attendancePeriod"));
+        var assignmentDayProperties = schemas.entrySet().stream()
+                .filter(entry -> entry.getKey().toString().contains("AssignmentDay"))
+                .map(entry -> (Map<?, ?>) ((Map<?, ?>) entry.getValue()).get("properties"))
+                .findFirst().orElseThrow();
+        assertTrue(assignmentDayProperties.containsKey("occupiedSeatCount"));
+        assertTrue(assignmentDayProperties.containsKey("assignedEmployeeCount"));
+        var participantProperties = schemas.entrySet().stream()
+                .filter(entry -> entry.getKey().toString().contains("Participant"))
+                .map(entry -> (Map<?, ?>) ((Map<?, ?>) entry.getValue()).get("properties"))
+                .filter(properties -> properties.containsKey("allocationUnitId"))
+                .findFirst().orElseThrow();
+        assertTrue(participantProperties.keySet().containsAll(List.of("unitType", "unitRank", "unitScoreTokens",
+                "attendancePeriod", "displayRank")));
         assertFalse(document.contains("androidSession"));
         assertFalse(document.toLowerCase().contains("bearerformat"));
     }
@@ -194,14 +209,17 @@ class ApiContractPersistenceTest {
             putJsonWithSession("/api/bidding/current/bids",
                     Map.of("roundId", roundId, "bids", List.of(Map.of("date", date, "tokens", 5))), csrf, session)
                     .then().statusCode(200).body("bidTotal", equalTo(5))
+                    .body("days[0].attendancePeriod", equalTo("FULL_DAY"))
                     .body("availableToBid", equalTo(startingBalance - 5))
                     .body("seatCapacity", equalTo(seatCapacity))
                     .body("days[0].reservedSeatCount", equalTo(2))
                     .body("days[0].assignableSeatCapacity", equalTo(seatCapacity - 2))
                     .body("days[0].reservationDescription", equalTo("Customer workshop"));
             putJsonWithSession("/api/bidding/current/bids",
-                    Map.of("roundId", roundId, "bids", List.of(Map.of("date", date, "tokens", 7))), csrf, session)
+                    Map.of("roundId", roundId, "bids", List.of(Map.of("date", date, "tokens", 7,
+                            "attendancePeriod", "MORNING_ONLY"))), csrf, session)
                     .then().statusCode(200).body("bidTotal", equalTo(7))
+                    .body("days[0].attendancePeriod", equalTo("MORNING_ONLY"))
                     .body("availableToBid", equalTo(startingBalance - 7))
                     .body("days[0].reservedSeatCount", equalTo(2));
         }
@@ -226,7 +244,9 @@ class ApiContractPersistenceTest {
         assertNotEquals(first, second);
         verify("activate@example.com", first, csrf, 400);
         String wrong = second.equals("000000") ? "000001" : "000000";
-        for (int i = 0; i < 5; i++) verify("activate@example.com", wrong, csrf, 400);
+        for (int i = 0; i < 5; i++) {
+            verify("activate@example.com", wrong, csrf, 400);
+        }
         verify("activate@example.com", second, csrf, 400);
 
         provision("expired@example.com", true, null);
@@ -423,7 +443,9 @@ class ApiContractPersistenceTest {
                 .formParam("j_password", password).header("X-Forwarded-Proto", "https")
                 .header("X-Forwarded-For", sourceFor(email))
                 .redirects().follow(false);
-        if (includeOrigin) request.header("Origin", origin);
+        if (includeOrigin) {
+            request.header("Origin", origin);
+        }
         return request.post("/j_security_check");
     }
 
@@ -438,7 +460,9 @@ class ApiContractPersistenceTest {
     private int password(String token, String password, String confirmation, Csrf csrf, Integer expected) {
         int status = postJson("/api/auth/activation/password", Map.of("activationToken", token,
                 "password", password, "passwordConfirmation", confirmation), csrf).statusCode();
-        if (expected != null) assertEquals(expected.intValue(), status);
+        if (expected != null) {
+            assertEquals(expected.intValue(), status);
+        }
         return status;
     }
 
@@ -459,7 +483,9 @@ class ApiContractPersistenceTest {
 
     private void provision(String email, boolean enabled, String password, boolean admin) {
         QuarkusTransaction.requiringNew().run(() -> {
-            if (employees.findByEmail(email).isPresent()) return;
+        if (employees.findByEmail(email).isPresent()) {
+            return;
+        }
             var employee = new EmployeeEntity();
             employee.email = email;
             employee.firstName = "Test";
@@ -483,4 +509,5 @@ class ApiContractPersistenceTest {
     }
 
     private record Csrf(String cookie, String token) {}
+
 }

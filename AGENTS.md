@@ -5,6 +5,13 @@
 - Treat `office-seat-bidding-specification.md` as the authoritative functional and security contract.
 - Preserve existing bidding and allocation behavior unless the specification requires a change.
 
+## Formatting
+
+- Read and apply the repository `.editorconfig` before editing files.
+- Preserve its configured indentation, CRLF line endings, and no-final-newline policy.
+- Use language formatters only when their output is compatible with `.editorconfig`, and limit formatting to files in scope.
+- Run `git diff --check` before handing work back.
+
 ## Backend
 
 - Use Java 25 and `mvn25`.

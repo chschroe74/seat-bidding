@@ -13,6 +13,7 @@ import de.gigaworks.seatbidding.persistence.RoundParticipationRepository;
 import de.gigaworks.seatbidding.persistence.RoundStatus;
 import de.gigaworks.seatbidding.persistence.SeatReservationEntity;
 import de.gigaworks.seatbidding.persistence.SeatReservationRepository;
+import de.gigaworks.seatbidding.persistence.AttendancePeriod;
 import de.gigaworks.seatbidding.round.SeatBiddingConfiguration;
 
 import jakarta.enterprise.context.ApplicationScoped;
@@ -25,6 +26,7 @@ import java.util.stream.Collectors;
 
 @ApplicationScoped
 public class BiddingService {
+
     
     @Inject
     EmployeeIdentityService identity;
@@ -90,6 +92,10 @@ public class BiddingService {
         catch (BidValidationException invalid) {
             throw ApplicationProblem.badRequest(invalid.code(), "Invalid bid set", invalid.getMessage());
         }
+        var periodsByDate = request.bids().stream()
+                .filter(bid -> bid.tokens() > 0)
+                .collect(Collectors.toMap(ReplaceBidsRequest.BidValue::date,
+                        ReplaceBidsRequest.BidValue::effectiveAttendancePeriod));
         
         bids.delete("participation.id", participation.id);
         normalized.forEach((date, tokens) -> {
@@ -97,6 +103,7 @@ public class BiddingService {
             bid.participation = participation;
             bid.roundDate = byDate.get(date);
             bid.tokens = tokens;
+            bid.attendancePeriod = periodsByDate.get(date);
             bids.persist(bid);
         });
         bids.flush();
@@ -107,16 +114,18 @@ public class BiddingService {
             java.time.Instant now) {
         var roundDates = dates.findForRound(participation.round.id);
         var saved = bids.findForParticipation(participation.id).stream()
-                .collect(Collectors.toMap(b -> b.roundDate.id, b -> b.tokens));
+                .collect(Collectors.toMap(b -> b.roundDate.id, Function.identity()));
         var reservationsByDate = reservations.findForDates(
                         roundDates.stream().map(date -> date.targetDate).toList()).stream()
                 .collect(Collectors.toMap(reservation -> reservation.targetDate, Function.identity()));
-        int total = saved.values().stream().mapToInt(Integer::intValue).sum();
+        int total = saved.values().stream().mapToInt(bid -> bid.tokens).sum();
         var dayResponses = roundDates.stream().map(date -> {
             SeatReservationEntity reservation = reservationsByDate.get(date.targetDate);
             int reservedSeatCount = reservation == null ? 0 : reservation.reservedSeatCount;
             return new BiddingContextResponse.DayBid(date.targetDate, date.targetDate.getDayOfWeek(),
-                    saved.getOrDefault(date.id, 0), reservedSeatCount,
+                    saved.containsKey(date.id) ? saved.get(date.id).tokens : 0,
+                    saved.containsKey(date.id) ? saved.get(date.id).attendancePeriod : AttendancePeriod.FULL_DAY,
+                    reservedSeatCount,
                     participation.round.seatCapacity - reservedSeatCount,
                     reservation == null ? null : reservation.description);
         }).toList();
@@ -126,4 +135,5 @@ public class BiddingService {
                 participation.startingBalance - total, dayResponses);
     }
     
+
 }

@@ -1,0 +1,177 @@
+databaseChangeLog:
+  - changeSet:
+      id: 004-01-half-day-structures
+      author: chschroe
+      changes:
+        - addColumn:
+            tableName: bid
+            columns:
+              - column: { name: attendance_period, type: varchar(20), defaultValue: FULL_DAY }
+        - createTable:
+            tableName: allocation_unit
+            columns:
+              - column: { name: id, type: bigint, autoIncrement: true, constraints: { primaryKey: true, primaryKeyName: pk_allocation_unit, nullable: false } }
+              - column: { name: round_date_id, type: bigint, constraints: { nullable: false } }
+              - column: { name: unit_type, type: varchar(20) }
+              - column: { name: score_tokens, type: integer }
+              - column: { name: fairness_identity, type: varchar(128) }
+              - column: { name: assigned, type: boolean }
+              - column: { name: score_rank, type: integer }
+              - column: { name: final_rank, type: integer }
+              - column: { name: resolution, type: varchar(32) }
+              - column: { name: boundary_tie_group, type: varchar(64) }
+              - column: { name: created_at, type: timestamptz, defaultValueComputed: now(), constraints: { nullable: false } }
+        - addForeignKeyConstraint:
+            baseTableName: allocation_unit
+            baseColumnNames: round_date_id
+            referencedTableName: round_date
+            referencedColumnNames: id
+            constraintName: fk_allocation_unit_round_date
+        - addColumn:
+            tableName: seat_assignment
+            columns:
+              - column: { name: allocation_unit_id, type: bigint }
+              - column: { name: attendance_period, type: varchar(20) }
+              - column: { name: unit_member_order, type: smallint }
+              - column: { name: display_rank, type: integer }
+        - addColumn:
+            tableName: round_allocation_audit
+            columns:
+              - column: { name: pairing_audit, type: jsonb, defaultValueComputed: "'{}'::jsonb" }
+              - column: { name: capacity_selection_value, type: varchar(255) }
+
+  - changeSet:
+      id: 004-02-backfill-half-day-structures
+      author: chschroe
+      changes:
+        - update:
+            tableName: bid
+            columns:
+              - column: { name: attendance_period, value: FULL_DAY }
+            where: attendance_period IS NULL
+        - sql:
+            comment: Preserve each historical assignment as a one-member SINGLE allocation unit.
+            sql: |
+              INSERT INTO allocation_unit
+                (round_date_id, unit_type, score_tokens, fairness_identity, assigned,
+                 score_rank, final_rank, resolution, boundary_tie_group, created_at)
+              SELECT sa.round_date_id, 'SINGLE', b.tokens, 'EMPLOYEE:' || rp.employee_id,
+                     sa.assigned, sa.token_rank, sa.final_rank, sa.resolution,
+                     sa.boundary_tie_group, sa.created_at
+                FROM seat_assignment sa
+                JOIN bid b ON b.id = sa.bid_id
+                JOIN round_participation rp ON rp.id = b.participation_id
+               ORDER BY sa.id
+        - sql:
+            comment: Link historical member results to their canonical SINGLE units.
+            sql: |
+              UPDATE seat_assignment sa
+                 SET allocation_unit_id = au.id,
+                     attendance_period = 'FULL_DAY',
+                     unit_member_order = 1,
+                     display_rank = sa.final_rank
+                FROM bid b, round_participation rp, allocation_unit au
+               WHERE b.id = sa.bid_id
+                 AND rp.id = b.participation_id
+                 AND au.round_date_id = sa.round_date_id
+                 AND au.fairness_identity = 'EMPLOYEE:' || rp.employee_id
+        - update:
+            tableName: round_allocation_audit
+            columns:
+              - column: { name: pairing_audit, valueComputed: "'{}'::jsonb" }
+            where: pairing_audit IS NULL
+        - sql:
+            comment: Preserve the deployed global-equivalent-solution draw under its version 1.3 name.
+            sql: UPDATE round_allocation_audit SET capacity_selection_value = random_selection_value
+
+  - changeSet:
+      id: 004-03-enforce-half-day-model
+      author: chschroe
+      preConditions:
+        - onFail: HALT
+        - sqlCheck:
+            expectedResult: 0
+            sql: SELECT count(*) FROM bid WHERE attendance_period IS NULL
+        - sqlCheck:
+            expectedResult: 0
+            sql: SELECT count(*) FROM seat_assignment WHERE allocation_unit_id IS NULL OR attendance_period IS NULL OR unit_member_order IS NULL OR display_rank IS NULL
+        - sqlCheck:
+            expectedResult: 0
+            sql: SELECT count(*) FROM allocation_unit WHERE unit_type IS NULL OR score_tokens IS NULL OR fairness_identity IS NULL OR assigned IS NULL OR score_rank IS NULL OR final_rank IS NULL OR resolution IS NULL
+      changes:
+        - addNotNullConstraint: { tableName: bid, columnName: attendance_period, columnDataType: varchar(20) }
+        - addNotNullConstraint: { tableName: allocation_unit, columnName: unit_type, columnDataType: varchar(20) }
+        - addNotNullConstraint: { tableName: allocation_unit, columnName: score_tokens, columnDataType: integer }
+        - addNotNullConstraint: { tableName: allocation_unit, columnName: fairness_identity, columnDataType: varchar(128) }
+        - addNotNullConstraint: { tableName: allocation_unit, columnName: assigned, columnDataType: boolean }
+        - addNotNullConstraint: { tableName: allocation_unit, columnName: score_rank, columnDataType: integer }
+        - addNotNullConstraint: { tableName: allocation_unit, columnName: final_rank, columnDataType: integer }
+        - addNotNullConstraint: { tableName: allocation_unit, columnName: resolution, columnDataType: varchar(32) }
+        - addNotNullConstraint: { tableName: seat_assignment, columnName: allocation_unit_id, columnDataType: bigint }
+        - addNotNullConstraint: { tableName: seat_assignment, columnName: attendance_period, columnDataType: varchar(20) }
+        - addNotNullConstraint: { tableName: seat_assignment, columnName: unit_member_order, columnDataType: smallint }
+        - addNotNullConstraint: { tableName: seat_assignment, columnName: display_rank, columnDataType: integer }
+        - addNotNullConstraint: { tableName: round_allocation_audit, columnName: pairing_audit, columnDataType: jsonb }
+        - addForeignKeyConstraint:
+            baseTableName: seat_assignment
+            baseColumnNames: allocation_unit_id
+            referencedTableName: allocation_unit
+            referencedColumnNames: id
+            constraintName: fk_assignment_allocation_unit
+        - addUniqueConstraint:
+            tableName: allocation_unit
+            columnNames: round_date_id, final_rank
+            constraintName: uq_allocation_unit_final_rank
+        - addUniqueConstraint:
+            tableName: allocation_unit
+            columnNames: round_date_id, fairness_identity
+            constraintName: uq_allocation_unit_fairness
+        - addUniqueConstraint:
+            tableName: seat_assignment
+            columnNames: allocation_unit_id, unit_member_order
+            constraintName: uq_assignment_unit_member_order
+        - addUniqueConstraint:
+            tableName: seat_assignment
+            columnNames: round_date_id, display_rank
+            constraintName: uq_assignment_display_rank
+        - createIndex:
+            tableName: allocation_unit
+            indexName: ix_allocation_unit_date_assigned_rank
+            columns:
+              - column: { name: round_date_id }
+              - column: { name: assigned }
+              - column: { name: final_rank }
+        - createIndex:
+            tableName: allocation_unit
+            indexName: ix_allocation_unit_resolution
+            columns:
+              - column: { name: round_date_id }
+              - column: { name: resolution }
+        - createIndex:
+            tableName: allocation_unit
+            indexName: ix_allocation_unit_boundary_group
+            columns:
+              - column: { name: round_date_id }
+              - column: { name: boundary_tie_group }
+        - createIndex:
+            tableName: seat_assignment
+            indexName: ix_assignment_display_rank
+            columns:
+              - column: { name: round_date_id }
+              - column: { name: display_rank }
+        # Liquibase Community has no portable addCheckConstraint change.
+        - sql:
+            sql: |
+              ALTER TABLE bid
+                ADD CONSTRAINT ck_bid_attendance_period CHECK (attendance_period IN ('FULL_DAY','MORNING_ONLY','AFTERNOON_ONLY'));
+              ALTER TABLE allocation_unit
+                ADD CONSTRAINT ck_allocation_unit_type CHECK (unit_type IN ('SINGLE','HALF_DAY_PAIR')),
+                ADD CONSTRAINT ck_allocation_unit_score CHECK (score_tokens > 0),
+                ADD CONSTRAINT ck_allocation_unit_ranks CHECK (score_rank >= 1 AND final_rank >= 1),
+                ADD CONSTRAINT ck_allocation_unit_resolution CHECK (resolution IN ('FIXED_WINNER','FIXED_LOSER','GLOBAL_TIE_WINNER','GLOBAL_TIE_LOSER','LEGACY_TIE_WINNER','LEGACY_TIE_LOSER')),
+                ADD CONSTRAINT ck_allocation_unit_resolution_result CHECK (assigned = (resolution IN ('FIXED_WINNER','GLOBAL_TIE_WINNER','LEGACY_TIE_WINNER'))),
+                ADD CONSTRAINT ck_allocation_unit_boundary CHECK ((resolution IN ('GLOBAL_TIE_WINNER','GLOBAL_TIE_LOSER') AND boundary_tie_group IS NOT NULL) OR (resolution NOT IN ('GLOBAL_TIE_WINNER','GLOBAL_TIE_LOSER') AND boundary_tie_group IS NULL));
+              ALTER TABLE seat_assignment
+                ADD CONSTRAINT ck_assignment_attendance_period CHECK (attendance_period IN ('FULL_DAY','MORNING_ONLY','AFTERNOON_ONLY')),
+                ADD CONSTRAINT ck_assignment_member_order CHECK (unit_member_order IN (1,2)),
+                ADD CONSTRAINT ck_assignment_display_rank CHECK (display_rank >= 1);

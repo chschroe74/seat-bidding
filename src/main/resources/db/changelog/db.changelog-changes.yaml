@@ -5,3 +5,5 @@ databaseChangeLog:
       file: db/changelog/changes/002-global-fairness-allocation.yaml
   - include:
       file: db/changelog/changes/003-administrator-seat-reservations.yaml
+  - include:
+      file: db/changelog/changes/004-half-day-allocation-units.yaml

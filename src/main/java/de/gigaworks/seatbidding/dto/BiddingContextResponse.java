@@ -1,6 +1,7 @@
 package de.gigaworks.seatbidding.dto;
 
 import de.gigaworks.seatbidding.persistence.RoundStatus;
+import de.gigaworks.seatbidding.persistence.AttendancePeriod;
 
 import java.time.DayOfWeek;
 import java.time.Instant;
@@ -26,10 +27,12 @@ public record BiddingContextResponse(
             LocalDate date,
             DayOfWeek weekday,
             int tokens,
+            AttendancePeriod attendancePeriod,
             int reservedSeatCount,
             int assignableSeatCapacity,
             String reservationDescription) {
         
     }
     
+
 }

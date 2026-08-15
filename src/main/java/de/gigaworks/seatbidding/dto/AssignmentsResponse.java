@@ -1,5 +1,8 @@
 package de.gigaworks.seatbidding.dto;
 
+import de.gigaworks.seatbidding.persistence.AllocationUnitType;
+import de.gigaworks.seatbidding.persistence.AttendancePeriod;
+
 import java.time.DayOfWeek;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -21,23 +24,30 @@ public record AssignmentsResponse(
             LocalDate date,
             DayOfWeek weekday,
             MyStatus myStatus,
-            int assignedCount,
             int reservedSeatCount,
             int assignableSeatCapacity,
             String reservationDescription,
+            int occupiedSeatCount,
+            int assignedEmployeeCount,
             List<Participant> participants) {
         
     }
     
     public record Participant(
+            long allocationUnitId,
+            AllocationUnitType unitType,
+            int unitRank,
+            int unitScoreTokens,
             long employeeId,
             String firstName,
             String lastName,
             int tokens,
+            AttendancePeriod attendancePeriod,
             boolean assigned,
-            int rank,
+            int displayRank,
             boolean isCurrentUser) {
         
     }
     
+
 }

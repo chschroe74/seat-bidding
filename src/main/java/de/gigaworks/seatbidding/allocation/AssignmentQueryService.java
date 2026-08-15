@@ -14,6 +14,7 @@ import jakarta.transaction.Transactional;
 
 @ApplicationScoped
 public class AssignmentQueryService {
+
     
     @Inject
     EmployeeIdentityService identity;
@@ -43,17 +44,23 @@ public class AssignmentQueryService {
                     .orElse(AssignmentsResponse.MyStatus.NO_BID);
             var participants = results.stream().map(a -> {
                 var employee = a.bid.participation.employee;
-                return new AssignmentsResponse.Participant(employee.id, employee.firstName, employee.lastName, a.bid.tokens,
-                        a.assigned, a.finalRank, employee.id.equals(current.id));
+                return new AssignmentsResponse.Participant(a.allocationUnit.id, a.allocationUnit.unitType,
+                        a.allocationUnit.finalRank, a.allocationUnit.scoreTokens, employee.id,
+                        employee.firstName, employee.lastName, a.bid.tokens, a.attendancePeriod,
+                        a.assigned, a.displayRank, employee.id.equals(current.id));
             }).toList();
-            int assignedCount = (int) results.stream().filter(a -> a.assigned).count();
+            int assignedEmployeeCount = (int) results.stream().filter(a -> a.assigned).count();
+            int occupiedSeatCount = (int) results.stream().filter(a -> a.assigned)
+                    .map(a -> a.allocationUnit.id).distinct().count();
             var reservation = reservations.findByTargetDate(day.targetDate).orElse(null);
             int reserved = reservation == null ? 0 : reservation.reservedSeatCount;
             return new AssignmentsResponse.AssignmentDay(day.targetDate, day.targetDate.getDayOfWeek(),
-                    myStatus, assignedCount, reserved, round.seatCapacity - reserved,
-                    reservation == null ? null : reservation.description, participants);
+                    myStatus, reserved, round.seatCapacity - reserved,
+                    reservation == null ? null : reservation.description,
+                    occupiedSeatCount, assignedEmployeeCount, participants);
         }).toList();
         return new AssignmentsResponse(round.id, round.status.name(), round.processedAt, round.seatCapacity, days);
     }
     
+
 }

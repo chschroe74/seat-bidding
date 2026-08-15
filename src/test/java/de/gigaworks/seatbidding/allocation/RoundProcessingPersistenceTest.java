@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import de.gigaworks.seatbidding.persistence.BidEntity;
+import de.gigaworks.seatbidding.persistence.AllocationUnitRepository;
 import de.gigaworks.seatbidding.persistence.BidRepository;
 import de.gigaworks.seatbidding.persistence.BiddingRoundRepository;
 import de.gigaworks.seatbidding.persistence.EmployeeEntity;
@@ -32,12 +33,14 @@ import org.junit.jupiter.api.Test;
 @QuarkusTest
 @QuarkusTestResource(value = de.gigaworks.seatbidding.support.PostgresTestResource.class, restrictToAnnotatedClass = true)
 class RoundProcessingPersistenceTest {
+
     @Inject BiddingRoundRepository rounds;
     @Inject EmployeeRepository employees;
     @Inject RoundDateRepository dates;
     @Inject RoundParticipationRepository participations;
     @Inject BidRepository bids;
     @Inject SeatAssignmentRepository assignments;
+    @Inject AllocationUnitRepository allocationUnits;
     @Inject SeatReservationRepository reservations;
     @Inject RoundAllocationAuditRepository allocationAudits;
     @Inject TokenLedgerRepository ledger;
@@ -88,6 +91,7 @@ class RoundProcessingPersistenceTest {
             var rolledBack = rounds.findOpen().orElseThrow();
             assertEquals(RoundStatus.OPEN, rolledBack.status);
             assertEquals(0, assignments.count("roundDate.round.id", rolledBack.id));
+            assertEquals(0, allocationUnits.count("roundDate.round.id", rolledBack.id));
             assertEquals(0, allocationAudits.count("round.id", rolledBack.id));
         });
 
@@ -104,14 +108,15 @@ class RoundProcessingPersistenceTest {
             assertEquals(4, results.size());
             assertEquals(3, results.stream().filter(a -> a.assigned).count());
             assertTrue(results.stream().allMatch(a -> a.tokenRank >= 1));
-            assertTrue(results.stream().allMatch(a -> "v3".equals(a.algorithmVersion)));
+            assertTrue(results.stream().allMatch(a -> "v4".equals(a.algorithmVersion)));
             assertTrue(results.stream().allMatch(a -> a.drawValue == null && a.tieGroup == null));
             assertEquals(3, ledger.count("round.id = ?1 and type = ?2", completed.id, LedgerType.BID_SPEND));
             var audit = allocationAudits.findForRound(completed.id).orElseThrow();
-            assertEquals("v3", audit.algorithmVersion);
+            assertEquals("v4", audit.algorithmVersion);
             assertEquals(64, audit.inputFingerprint.length());
             assertEquals(64, audit.selectedSolutionFingerprint.length());
-            assertNotNull(audit.randomSelectionValue);
+            assertNotNull(audit.capacitySelectionValue);
+            assertNotNull(audit.pairingAudit);
             assertTrue(audit.objectiveSummary.replace(" ", "").contains("\"filledUnresolvedSlots\":2"));
 
             List<Integer> spends = new ArrayList<>();
@@ -127,4 +132,5 @@ class RoundProcessingPersistenceTest {
             assertEquals(4, assignments.count("roundDate.round.id", completed.id));
         });
     }
+
 }

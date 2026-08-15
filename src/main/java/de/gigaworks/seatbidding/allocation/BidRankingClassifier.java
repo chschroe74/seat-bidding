@@ -3,73 +3,65 @@ package de.gigaworks.seatbidding.allocation;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.stream.Collectors;
 
 @ApplicationScoped
 public class BidRankingClassifier {
 
-    private static final Comparator<RoundAllocation.TargetDate> DATE_ORDER = Comparator
-            .comparing(RoundAllocation.TargetDate::targetDate)
-            .thenComparingLong(RoundAllocation.TargetDate::dateId);
-    private static final Comparator<RoundAllocation.Bid> BID_ORDER = Comparator
-            .comparingInt(RoundAllocation.Bid::tokens).reversed()
-            .thenComparingLong(RoundAllocation.Bid::bidId);
+    private static final Comparator<RoundAllocation.Unit> UNIT_ORDER = Comparator
+            .comparingInt(RoundAllocation.Unit::scoreTokens).reversed()
+            .thenComparing(RoundAllocation.Unit::fairnessIdentity);
 
     public RoundAllocation.Problem classify(long roundId, int capacity,
-            List<RoundAllocation.TargetDate> targetDates, List<RoundAllocation.Bid> bids) {
+            List<RoundAllocation.TargetDate> targetDates, RoundAllocation.Pairing pairing) {
         if (capacity < 1) {
             throw new IllegalArgumentException("capacity must be at least one");
         }
-        validate(targetDates, bids);
-        Map<Long, List<RoundAllocation.Bid>> bidsByDate = bids.stream()
-                .collect(Collectors.groupingBy(RoundAllocation.Bid::dateId));
-        var dates = targetDates.stream().sorted(DATE_ORDER)
+        Map<Long, List<RoundAllocation.Unit>> unitsByDate = pairing.units().stream()
+                .collect(Collectors.groupingBy(RoundAllocation.Unit::dateId));
+        var dates = targetDates.stream().sorted(Comparator.comparing(RoundAllocation.TargetDate::targetDate)
+                        .thenComparingLong(RoundAllocation.TargetDate::dateId))
                 .map(date -> classifyDate(date, effectiveCapacity(date, capacity),
-                        bidsByDate.getOrDefault(date.dateId(), List.of())))
+                        unitsByDate.getOrDefault(date.dateId(), List.of())))
                 .toList();
-        return new RoundAllocation.Problem(roundId, capacity, dates);
+        return new RoundAllocation.Problem(roundId, capacity, dates, pairing.auditJson());
     }
 
-    private RoundAllocation.ClassifiedDate classifyDate(
-            RoundAllocation.TargetDate date, int capacity, List<RoundAllocation.Bid> bids) {
-        var byTokens = new LinkedHashMap<Integer, List<RoundAllocation.Bid>>();
-        bids.stream().sorted(BID_ORDER)
-                .forEach(bid -> byTokens.computeIfAbsent(bid.tokens(), _ -> new ArrayList<>()).add(bid));
-        var classified = new ArrayList<RoundAllocation.ClassifiedBid>(bids.size());
-        int biddersAbove = 0;
-        int tokenRank = 0;
+    private static RoundAllocation.ClassifiedDate classifyDate(RoundAllocation.TargetDate date,
+            int capacity, List<RoundAllocation.Unit> units) {
+        var byScore = new LinkedHashMap<Integer, List<RoundAllocation.Unit>>();
+        units.stream().sorted(UNIT_ORDER)
+                .forEach(unit -> byScore.computeIfAbsent(unit.scoreTokens(), _ -> new ArrayList<>()).add(unit));
+        var classified = new ArrayList<RoundAllocation.ClassifiedUnit>();
+        int unitsAbove = 0;
+        int scoreRank = 0;
         int unresolvedSeats = 0;
-        for (var entry : byTokens.entrySet()) {
-            tokenRank++;
-            var group = entry.getValue();
-            int groupEnd = biddersAbove + group.size();
+        for (var entry : byScore.entrySet()) {
+            scoreRank++;
+            int groupEnd = unitsAbove + entry.getValue().size();
             RoundAllocation.Classification classification;
-            String boundaryGroup = null;
+            String boundary = null;
             if (groupEnd <= capacity) {
                 classification = RoundAllocation.Classification.FIXED_WINNER;
             }
-            else if (biddersAbove >= capacity) {
+            else if (unitsAbove >= capacity) {
                 classification = RoundAllocation.Classification.FIXED_LOSER;
             }
             else {
                 classification = RoundAllocation.Classification.BOUNDARY;
-                unresolvedSeats = capacity - biddersAbove;
-                boundaryGroup = "date:" + date.dateId() + ":tokens:" + entry.getKey();
+                unresolvedSeats = capacity - unitsAbove;
+                boundary = "date:" + date.dateId() + ":score:" + entry.getKey();
             }
-            for (var bid : group) {
-                classified.add(new RoundAllocation.ClassifiedBid(date.dateId(), date.targetDate(), bid.bidId(),
-                        bid.employeeId(), bid.tokens(), tokenRank, classification, boundaryGroup));
+            for (var unit : entry.getValue()) {
+                classified.add(new RoundAllocation.ClassifiedUnit(unit, scoreRank, classification, boundary));
             }
-            biddersAbove = groupEnd;
+            unitsAbove = groupEnd;
         }
-        return new RoundAllocation.ClassifiedDate(
-                date.dateId(), date.targetDate(), date.reservationId(), date.reservedSeatCount(),
-                capacity, unresolvedSeats, classified);
+        return new RoundAllocation.ClassifiedDate(date.dateId(), date.targetDate(), date.reservationId(),
+                date.reservedSeatCount(), capacity, unresolvedSeats, classified);
     }
 
     private static int effectiveCapacity(RoundAllocation.TargetDate date, int physicalCapacity) {
@@ -82,28 +74,6 @@ public class BidRankingClassifier {
             throw new IllegalArgumentException("reservation identity and reserved seat count must be consistent");
         }
         return assignable;
-    }
-
-    private static void validate(List<RoundAllocation.TargetDate> targetDates, List<RoundAllocation.Bid> bids) {
-        Map<Long, java.time.LocalDate> datesById = new LinkedHashMap<>();
-        for (var date : targetDates) {
-            if (date.targetDate() == null || datesById.putIfAbsent(date.dateId(), date.targetDate()) != null) {
-                throw new IllegalArgumentException("target dates must have unique identifiers and non-null dates");
-            }
-        }
-        Set<Long> bidIds = new HashSet<>();
-        Set<String> employeeDates = new HashSet<>();
-        for (var bid : bids) {
-            if (bid.tokens() <= 0) {
-                throw new IllegalArgumentException("all bids must be positive");
-            }
-            if (bid.targetDate() == null || !bid.targetDate().equals(datesById.get(bid.dateId()))) {
-                throw new IllegalArgumentException("every bid must reference a canonical target date");
-            }
-            if (!bidIds.add(bid.bidId()) || !employeeDates.add(bid.dateId() + ":" + bid.employeeId())) {
-                throw new IllegalArgumentException("bid identifiers and employee/date relationships must be unique");
-            }
-        }
     }
 
 }

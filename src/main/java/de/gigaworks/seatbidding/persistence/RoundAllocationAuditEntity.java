@@ -36,11 +36,18 @@ public class RoundAllocationAuditEntity {
     @Column(name = "objective_summary", nullable = false, columnDefinition = "jsonb", updatable = false)
     public String objectiveSummary;
 
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "pairing_audit", nullable = false, columnDefinition = "jsonb", updatable = false)
+    public String pairingAudit;
+
     @Column(name = "selected_solution_fingerprint", nullable = false, length = 64, updatable = false)
     public String selectedSolutionFingerprint;
 
     @Column(name = "random_selection_value", length = 255, updatable = false)
     public String randomSelectionValue;
+
+    @Column(name = "capacity_selection_value", length = 255, updatable = false)
+    public String capacitySelectionValue;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     public Instant createdAt;

@@ -26,7 +26,7 @@ class AllocationEngineTest {
 
         assertEquals(1, assigned(solution).size());
         assertEquals(3, solution.equivalentSolutionCount());
-        assertEquals("index:2", solution.randomSelectionValue());
+        assertEquals("index:2", solution.capacitySelectionValue());
         assertEquals(1, selector.invocations);
     }
 
@@ -61,7 +61,8 @@ class AllocationEngineTest {
                 bid(2, 6, 2, 10), bid(2, 7, 3, 10));
         var solution = solve(1, new IndexedSelector(0), dates(3), bids);
 
-        assertTrue(solution.results().stream().anyMatch(result -> result.bidId() == 1 && result.assigned()));
+        assertTrue(solution.results().stream().anyMatch(result -> result.assigned()
+                && result.members().stream().anyMatch(member -> member.bidId() == 1)));
         assertEquals(List.of(1, 1, 1), solution.objective().sortedTieWinCounts());
     }
 
@@ -76,9 +77,9 @@ class AllocationEngineTest {
         assertTrue(byBid.get(2L).assigned() ^ byBid.get(3L).assigned());
         assertEquals(AllocationResolution.FIXED_LOSER, byBid.get(4L).resolution());
         assertFalse(byBid.get(4L).assigned());
-        assertEquals(1, byBid.get(1L).tokenRank());
-        assertEquals(2, byBid.get(2L).tokenRank());
-        assertEquals(3, byBid.get(4L).tokenRank());
+        assertEquals(1, byBid.get(1L).scoreRank());
+        assertEquals(2, byBid.get(2L).scoreRank());
+        assertEquals(3, byBid.get(4L).scoreRank());
     }
 
     @Test
@@ -87,7 +88,8 @@ class AllocationEngineTest {
                 bid(0, 1, 1, 10), bid(0, 2, 2, 10), bid(0, 3, 3, 10)));
 
         assertEquals(2, assigned(solution).size());
-        assertEquals(2, assigned(solution).stream().map(RoundAllocation.Result::employeeId).distinct().count());
+        assertEquals(2, assigned(solution).stream().flatMap(result -> result.members().stream())
+                .map(RoundAllocation.MemberResult::employeeId).distinct().count());
     }
 
     @Test
@@ -96,8 +98,8 @@ class AllocationEngineTest {
                 bid(0, 1, 1, 20), bid(0, 2, 2, 10), bid(0, 3, 3, 10),
                 bid(1, 4, 2, 30), bid(1, 5, 3, 30), bid(1, 6, 4, 30)));
 
-        assertEquals("date:100:tokens:10", byBid(solution).get(2L).boundaryTieGroup());
-        assertEquals("date:101:tokens:30", byBid(solution).get(4L).boundaryTieGroup());
+        assertEquals("date:100:score:10", byBid(solution).get(2L).boundaryTieGroup());
+        assertEquals("date:101:score:30", byBid(solution).get(4L).boundaryTieGroup());
         assertEquals(3, solution.objective().filledUnresolvedSlots());
         assertEquals(3, solution.objective().distinctTieWinners());
     }
@@ -150,7 +152,7 @@ class AllocationEngineTest {
         var solution = solve(2, selector, dates(1), List.of(bid(0, 1, 1, 20), bid(0, 2, 2, 10)));
 
         assertEquals(0, selector.invocations);
-        assertNull(solution.randomSelectionValue());
+        assertNull(solution.capacitySelectionValue());
         assertEquals(64, solution.inputFingerprint().length());
         assertEquals(64, solution.selectedSolutionFingerprint().length());
         assertTrue(solution.results().stream().allMatch(result -> result.resolution() == AllocationResolution.FIXED_WINNER));
@@ -196,7 +198,8 @@ class AllocationEngineTest {
     private static RoundAllocation.Solution solve(int capacity, IndexedSelector selector,
             List<RoundAllocation.TargetDate> dates, List<RoundAllocation.Bid> bids) {
         var classifier = new BidRankingClassifier();
-        return new GlobalFairnessOptimizer(selector).solve(classifier.classify(7, capacity, dates, bids));
+        var pairing = new HalfDayPairingEngine(selector).pair(dates, bids);
+        return new GlobalFairnessOptimizer(selector).solve(classifier.classify(7, capacity, dates, pairing));
     }
 
     private static List<RoundAllocation.TargetDate> dates(int count) {
@@ -228,11 +231,12 @@ class AllocationEngineTest {
 
     private static Map<Long, RoundAllocation.Result> byBid(RoundAllocation.Solution solution) {
         var results = new HashMap<Long, RoundAllocation.Result>();
-        solution.results().forEach(result -> results.put(result.bidId(), result));
+        solution.results().forEach(result -> result.members()
+                .forEach(member -> results.put(member.bidId(), result)));
         return results;
     }
 
-    private static final class IndexedSelector implements RandomSelector {
+    private static final class IndexedSelector implements RandomSelector, PairingRandomSelector {
         private final int requestedIndex;
         private int invocations;
 
@@ -247,4 +251,5 @@ class AllocationEngineTest {
             return new Draw<>(canonicalValues.get(index), "index:" + index);
         }
     }
+
 }

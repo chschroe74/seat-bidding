@@ -1,7 +1,6 @@
 package de.gigaworks.seatbidding.persistence;
 
 import de.gigaworks.seatbidding.allocation.AllocationResolution;
-
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -12,13 +11,13 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
-import jakarta.persistence.OneToOne;
+import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
 import java.time.Instant;
 
 @Entity
-@Table(name = "seat_assignment")
-public class SeatAssignmentEntity {
+@Table(name = "allocation_unit")
+public class AllocationUnitEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -28,32 +27,24 @@ public class SeatAssignmentEntity {
     @JoinColumn(name = "round_date_id", nullable = false)
     public RoundDateEntity roundDate;
 
-    @OneToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumn(name = "bid_id", nullable = false, unique = true)
-    public BidEntity bid;
+    @Enumerated(EnumType.STRING)
+    @Column(name = "unit_type", nullable = false, length = 20, updatable = false)
+    public AllocationUnitType unitType;
 
-    @ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumn(name = "allocation_unit_id", nullable = false, updatable = false)
-    public AllocationUnitEntity allocationUnit;
+    @Column(name = "score_tokens", nullable = false, updatable = false)
+    public int scoreTokens;
+
+    @Column(name = "fairness_identity", nullable = false, length = 128, updatable = false)
+    public String fairnessIdentity;
 
     @Column(nullable = false, updatable = false)
     public boolean assigned;
 
-    @Enumerated(EnumType.STRING)
-    @Column(name = "attendance_period", nullable = false, length = 20, updatable = false)
-    public AttendancePeriod attendancePeriod;
+    @Column(name = "score_rank", nullable = false, updatable = false)
+    public int scoreRank;
 
-    @Column(name = "unit_member_order", nullable = false, updatable = false)
-    public short unitMemberOrder;
-
-    @Column(name = "display_rank", nullable = false, updatable = false)
-    public int displayRank;
-
-    @Column(name = "final_rank", nullable = false)
+    @Column(name = "final_rank", nullable = false, updatable = false)
     public int finalRank;
-
-    @Column(name = "token_rank", nullable = false, updatable = false)
-    public int tokenRank;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 32, updatable = false)
@@ -62,19 +53,10 @@ public class SeatAssignmentEntity {
     @Column(name = "boundary_tie_group", length = 64, updatable = false)
     public String boundaryTieGroup;
 
-    @Column(name = "tie_group", length = 64)
-    public String tieGroup;
-
-    @Column(name = "draw_value")
-    public String drawValue;
-
-    @Column(name = "algorithm_version", nullable = false, length = 32)
-    public String algorithmVersion;
-
     @Column(name = "created_at", nullable = false, updatable = false)
     public Instant createdAt;
 
-    @jakarta.persistence.PrePersist
+    @PrePersist
     void createTimestamp() {
         createdAt = Instant.now();
     }

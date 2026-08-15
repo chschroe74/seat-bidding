@@ -1,5 +1,7 @@
 package de.gigaworks.seatbidding.dto;
 
+import de.gigaworks.seatbidding.persistence.AttendancePeriod;
+
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -17,9 +19,14 @@ public record ReplaceBidsRequest(
     
     public record BidValue(
             @NotNull LocalDate date,
-            @Min(0) @Max(Integer.MAX_VALUE) int tokens) {
+            @Min(0) @Max(Integer.MAX_VALUE) int tokens,
+            AttendancePeriod attendancePeriod) {
+
+        public AttendancePeriod effectiveAttendancePeriod() {
+            return attendancePeriod == null ? AttendancePeriod.FULL_DAY : attendancePeriod;
+        }
         
     }
     
-}
 
+}

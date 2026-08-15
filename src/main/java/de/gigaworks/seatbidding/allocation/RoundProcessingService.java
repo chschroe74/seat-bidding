@@ -1,6 +1,8 @@
 package de.gigaworks.seatbidding.allocation;
 
 import de.gigaworks.seatbidding.persistence.BidEntity;
+import de.gigaworks.seatbidding.persistence.AllocationUnitEntity;
+import de.gigaworks.seatbidding.persistence.AllocationUnitRepository;
 import de.gigaworks.seatbidding.persistence.BidRepository;
 import de.gigaworks.seatbidding.persistence.BiddingRoundRepository;
 import de.gigaworks.seatbidding.persistence.LedgerType;
@@ -45,6 +47,9 @@ public class RoundProcessingService {
 
     @Inject
     SeatAssignmentRepository assignments;
+
+    @Inject
+    AllocationUnitRepository allocationUnits;
 
     @Inject
     SeatReservationRepository reservations;
@@ -95,21 +100,39 @@ public class RoundProcessingService {
                             reservation == null ? null : reservation.id, reserved, round.seatCapacity - reserved);
                 }).toList(),
                 roundBids.stream().map(bid -> new RoundAllocation.Bid(bid.roundDate.id, bid.roundDate.targetDate,
-                        bid.id, bid.participation.employee.id, bid.tokens)).toList());
+                        bid.id, bid.participation.employee.id, bid.tokens, bid.attendancePeriod)).toList());
 
         for (var result : solution.results()) {
-            var assignment = new SeatAssignmentEntity();
-            assignment.roundDate = datesById.get(result.dateId());
-            assignment.bid = bidsById.get(result.bidId());
-            assignment.assigned = result.assigned();
-            assignment.tokenRank = result.tokenRank();
-            assignment.finalRank = result.finalRank();
-            assignment.resolution = result.resolution();
-            assignment.boundaryTieGroup = result.boundaryTieGroup();
-            assignment.tieGroup = null;
-            assignment.drawValue = null;
-            assignment.algorithmVersion = result.algorithmVersion();
-            assignments.persist(assignment);
+            var unit = new AllocationUnitEntity();
+            unit.roundDate = datesById.get(result.dateId());
+            unit.unitType = result.unitType();
+            unit.scoreTokens = result.scoreTokens();
+            unit.fairnessIdentity = result.fairnessIdentity();
+            unit.assigned = result.assigned();
+            unit.scoreRank = result.scoreRank();
+            unit.finalRank = result.finalRank();
+            unit.resolution = result.resolution();
+            unit.boundaryTieGroup = result.boundaryTieGroup();
+            allocationUnits.persist(unit);
+            for (var member : result.members()) {
+                var assignment = new SeatAssignmentEntity();
+                assignment.roundDate = unit.roundDate;
+                assignment.bid = bidsById.get(member.bidId());
+                assignment.allocationUnit = unit;
+                assignment.assigned = result.assigned();
+                assignment.attendancePeriod = member.attendancePeriod();
+                assignment.unitMemberOrder = member.memberOrder();
+                assignment.displayRank = member.displayRank();
+                // Retained deployed columns remain truthful compatibility copies for member rows.
+                assignment.tokenRank = result.scoreRank();
+                assignment.finalRank = member.displayRank();
+                assignment.resolution = result.resolution();
+                assignment.boundaryTieGroup = result.boundaryTieGroup();
+                assignment.tieGroup = null;
+                assignment.drawValue = null;
+                assignment.algorithmVersion = result.algorithmVersion();
+                assignments.persist(assignment);
+            }
         }
         persistAudit(round, solution);
         assignments.flush();
@@ -148,8 +171,10 @@ public class RoundProcessingService {
         audit.algorithmVersion = RoundAllocation.ALGORITHM_VERSION;
         audit.inputFingerprint = solution.inputFingerprint();
         audit.objectiveSummary = objectiveSummary(solution.objective());
+        audit.pairingAudit = solution.pairingAudit();
         audit.selectedSolutionFingerprint = solution.selectedSolutionFingerprint();
-        audit.randomSelectionValue = solution.randomSelectionValue();
+        audit.randomSelectionValue = null;
+        audit.capacitySelectionValue = solution.capacitySelectionValue();
         allocationAudits.persist(audit);
     }
 

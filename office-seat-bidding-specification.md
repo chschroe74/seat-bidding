@@ -1,37 +1,39 @@
 # Office Seat Bidding Application — Implementation Specification
 
 **Status:** Approved implementation specification  
-**Target release:** Version 1.2  
+**Target release:** Version 1.3  
 **Primary client:** Flutter Progressive Web App (PWA)  
 **Optional client:** Native Flutter Android application  
 **Backend:** Java 25, Quarkus, PostgreSQL, Hibernate ORM with Panache, Liquibase, application-managed authentication, Quarkus Scheduler, Jib  
 
 ## 1. Purpose
 
-The application distributes a limited number of office seats fairly among employees. Employees receive tokens for each bidding round and privately bid for individual weekdays. Administrators may reserve physical seats before allocation, and employees see those reservations while deciding their bids. At the configured cutoff, the backend subtracts those reservations from capacity, ranks bids per target date, resolves all capacity-boundary ties globally across the round using fairness-aware allocation, uses randomness only to choose among equally optimal global solutions, publishes assignments and reservation information, deducts only successful bids, and opens the next round.
+The application distributes a limited number of office seats fairly among employees. Employees receive tokens for each bidding round and privately bid for individual weekdays, optionally indicating morning-only or afternoon-only attendance. Administrators may reserve physical seats before allocation, and employees see those reservations while deciding their bids. At cutoff, the backend subtracts reservations from capacity, forms complementary half-day sharing pairs, ranks full-day employees, unpaired half-day employees, and half-day pairs as allocation units, resolves capacity-boundary ties globally across the round using fairness-aware allocation, publishes assignments, deducts only successful individual bids, and opens the next round.
 
-This document is the authoritative version 1.2 implementation contract. Requirements marked **MUST**, **SHOULD**, and **MAY** have their conventional meanings.
+This document is the authoritative version 1.3 implementation contract. Requirements marked **MUST**, **SHOULD**, and **MAY** have their conventional meanings.
 
 ## 2. Scope
 
-### 2.1 Version 1.2 goals
+### 2.1 Version 1.3 goals
 
 - Support one office and one shared seat capacity for every weekday.
 - Run one weekly round covering Monday through Friday.
 - Let authenticated, pre-provisioned employees view published assignments and replace their bids until cutoff.
 - Show each open-round date's reserved count, assignable capacity, and public reservation description as read-only bidding information.
+- Let employees independently choose full-day, morning-only, or afternoon-only attendance for every positive bid.
+- Pair complementary half-day bidders so two employees may share one physical seat while retaining individual bids and token charges.
 - Keep all employees' open-round bids private.
 - Maintain auditable token balances and round results.
 - Let manually designated administrators create and delete dated seat reservations through a desktop-only PWA section before the affected assignments are processed.
 - Serve the compiled Flutter PWA and REST API from one Quarkus application image.
 - Optionally distribute a native Android client using the same API.
 
-### 2.2 Explicitly out of scope for version 1.2
+### 2.2 Explicitly out of scope for version 1.3
 
 - Administrative functions other than dated seat reservations, including employee provisioning and administrator-role management.
 - Public-holiday and office-closure handling.
 - Configurable capacities per day, multiple offices, named desks, or reservation workflows beyond reducing the bidding capacity for a date.
-- Half-day attendance and seat sharing (defined as a future extension in section 20).
+- Time ranges other than the fixed morning/afternoon periods, partial-day pricing, and administrator-created pairings.
 - Non-weekly or overlapping round cadences in the UI.
 - Kubernetes or multiple active scheduler instances.
 - Server-driven PWA reminders and guaranteed offline bidding.
@@ -45,6 +47,10 @@ This document is the authoritative version 1.2 implementation contract. Requirem
 - **Published round:** The latest completed round shown in **Seat assignments**. Immediately after Friday cutoff this normally covers the following Monday–Friday, even though that week has not begun.
 - **Balance:** Tokens available to an employee for the open round.
 - **Bid:** A positive integer token amount for one round date. Zero means no bid and need not be persisted.
+- **Attendance period:** `FULL_DAY`, `MORNING_ONLY`, or `AFTERNOON_ONLY` on a positive bid. It affects pairing and display, not that bid's token price.
+- **Allocation unit:** One indivisible capacity competitor for one target date: one full-day bidder, one unpaired half-day bidder, or one complementary morning/afternoon pair. Every successful unit consumes one physical seat.
+- **Half-day pair:** One morning-only bid and one afternoon-only bid combined into a single allocation unit. Its ranking score is the sum of both individual bids, but each employee retains their own bid and accounting result.
+- **Fairness identity:** The stable identity used to count round-level boundary-tie wins. A single unit uses its employee ID; a pair uses the canonical unordered combination of both employee IDs.
 - **Carry-over:** The capped portion of the balance remaining after successful bids are deducted. Tokens committed to unsuccessful bids remain unspent.
 - **Seat reservation:** One administrator-created record that removes a positive number of physical seats from bidding for one future Monday–Friday date and may include a public description.
 - **Physical seat capacity:** The round's configured `seatCapacity` snapshot before reservations.
@@ -59,8 +65,8 @@ The following settings come from Quarkus application configuration and are valid
 
 | Setting | Default | Constraint |
 |---|---:|---|
-| Tokens granted per round | 50 | integer `>= 0` |
-| Carry-over cap | 20 | integer `>= 0` |
+| Tokens granted per round | 60 | integer `>= 0` |
+| Carry-over cap | 24 | integer `>= 0` |
 | Seat capacity | deployment-specific | integer `>= 1`, same for all dates |
 | Scheduler cron | `0 0 22 ? * FRI` | valid Quarkus/Quartz cron |
 | Scheduler time zone | `Europe/Berlin` | valid IANA zone |
@@ -88,11 +94,15 @@ Reservations do not change the snapshotted physical capacity. The reservation ap
 ### 5.2 Bid rules
 
 - An employee may bid once per target date; a submission replaces the employee's complete five-date bid set atomically.
+- Every positive bid stores one attendance period: `FULL_DAY`, `MORNING_ONLY`, or `AFTERNOON_ONLY`.
+- `FULL_DAY` is the independent default for every date. During the version 1.3 rollout, an omitted period on a positive bid is interpreted as `FULL_DAY`; version 1.3 clients always send it explicitly.
 - Bids may be replaced any number of times while the round is `OPEN` and before its cutoff instant.
-- Zero is equivalent to no bid and MUST be removed or omitted in persistence.
+- Zero is equivalent to no bid and MUST be removed or omitted in persistence. A no-bid date has no persisted period and starts as `FULL_DAY` in a new draft.
 - Negative, fractional, duplicate-date, out-of-round, weekend, or over-budget bids are invalid.
+- Periods are independent across dates. Changing one MUST NOT change another date, token amount, reservation data, or auto-distribution selection.
+- A successful half-day bid spends its full amount. There is no half-day discount or token splitting.
 - The backend derives the employee from Quarkus `SecurityIdentity` established by the validated form-authentication cookie; a client-supplied employee identifier is forbidden.
-- Other employees' open-round bids MUST never be returned by any endpoint.
+- Other employees' open-round tokens and attendance periods MUST never be returned by any endpoint.
 
 ### 5.3 Administrative seat reservation rules
 
@@ -107,47 +117,66 @@ Reservations do not change the snapshotted physical capacity. The reservation ap
 
 For each target date, `assignableSeatCapacity = physicalSeatCapacity - reservedSeatCount`, where a missing reservation means zero reserved seats. The backend MUST reject inconsistent data rather than silently clamp a negative result.
 
-### 5.4 Allocation rules
+### 5.4 Half-day pairing and allocation-unit construction
 
-Token ranking remains authoritative for every target date:
+For each target date, construct allocation units before capacity ranking:
 
-1. Select all positive bids and group them by token amount descending.
-2. Calculate the date's assignable seat capacity after reservations. If it is zero, every bidder is unsuccessful. If the number of bidders is at most assignable capacity, every bidder receives a seat and surplus assignable seats remain unassigned.
-3. A token group lying entirely above the capacity boundary consists of fixed winners. A token group lying entirely below it consists of fixed losers.
-4. When an exact-token group crosses the capacity boundary, that group is the date's **boundary tie** and the remaining capacity is its unresolved seat count. Only employees in that boundary tie are eligible for those unresolved seats. A lower-token bidder MUST never displace a fixed winner or a boundary-tie candidate.
+1. Partition positive bids into full-day, morning-only, and afternoon-only sets.
+2. Set `pairCount = min(morningCount, afternoonCount)`. If it is zero, create no pairs.
+3. Every bid on the smaller side is selected for pairing. From a larger side, select its `pairCount` highest-token bids. If an exact-token tie crosses this selection boundary, select only the required number uniformly at random from that tied group. Higher bids cannot be displaced by lower bids.
+4. Sort selected morning bids by tokens descending and selected afternoon bids by tokens ascending, then pair positionally. Opposite-order matching deliberately balances combined scores.
+5. Equal-token ordering may permit several equivalent pair compositions. Randomly choose among complete compositions allowed by the opposite-order rule, after canonicalizing employees by stable ID so database and collection ordering create no bias.
+6. Every selected complementary pair becomes one `HALF_DAY_PAIR` allocation unit with `scoreTokens = morningBid.tokens + afternoonBid.tokens`.
+7. Every full-day bid and every excess/unselected half-day bid becomes a `SINGLE` allocation unit with `scoreTokens = bid.tokens`. An unmatched half-day bidder remains fully eligible and, if successful, occupies one physical seat alone.
+8. A pair is indivisible: both members succeed or both fail. Ranking, global fairness, and final selection can never split it.
+9. Pairing occurs only within one target date. An employee has at most one bid and therefore belongs to at most one unit on that date.
+10. Persist selection, composition, member periods, score, and random audit values during processing. Reads MUST never reconstruct or redraw pairs.
+
+Majority-side selection and pair-composition randomness operate only among exact-token-equivalent alternatives and precede capacity-boundary selection. A retry after rollback may choose different equivalent pairs; a completed round is immutable.
+
+Fairness identity is canonical and orientation-independent. A single uses `EMPLOYEE:<employeeId>`; a pair uses `PAIR:<lowerEmployeeId>:<higherEmployeeId>`. The same two employees form the same fairness identity on another date even when their morning/afternoon roles reverse. Different partners form different identities. This intentionally measures weekly boundary fairness over allocation units rather than separately attributing a pair win to both employees.
+
+### 5.5 Allocation rules
+
+Allocation-unit scores remain authoritative for every target date:
+
+1. Construct all allocation units under section 5.4 and group them by `scoreTokens` descending.
+2. Calculate assignable capacity after reservations. If it is zero, every unit is unsuccessful. If unit count is at most capacity, every unit succeeds and surplus seats remain unassigned.
+3. A score group entirely above the boundary consists of fixed winning units. A score group entirely below it consists of fixed losing units.
+4. When an exact-score group crosses the boundary, that group is the date's **boundary tie** and the remaining capacity is its unresolved seat count. Only units in that group are eligible. A lower-score unit can never displace a fixed winner or boundary candidate.
 5. Establish all fixed winners and fixed losers for all five target dates before resolving any boundary tie.
-6. Collect every date's boundary candidates and unresolved seats into one round-level constrained allocation problem. An employee is eligible only for unresolved slots belonging to a date on which that employee is in the boundary tie, can receive at most one seat per target date, and may receive seats on multiple different dates. Multiple unresolved seats for one date are represented as multiple slots or an equivalent capacity constraint.
-7. Solve the complete problem using the strict hierarchical objectives in section 5.4.1. No target date may be resolved independently, greedily, or in iteration order.
-8. If several complete allocations remain equivalent under every objective, select one randomly as specified in section 5.4.2.
-9. Persist one final result for every positive bid, the deterministic classification and boundary membership, the chosen global outcome, stable display rank, and the round-level allocation audit. A completed round MUST never rerun the optimiser or random selector when read.
-10. After the final allocation has been selected and persisted, charge every successful bidder the full bid amount. An unsuccessful bidder spends no tokens for that bid; its full amount remains part of the employee's balance before the carry-over cap is applied.
+6. Collect all boundary units and unresolved seats into one round-level constrained problem. A fairness identity is eligible only on a date where its unit is in the boundary tie, can win at most one unit on that date, and may win on multiple dates.
+7. Solve the problem using section 5.5.1's strict objectives. No date may be resolved independently, greedily, or in iteration order.
+8. If complete allocations remain equivalent under every objective, select one randomly under section 5.5.2.
+9. Persist one individual result for every positive bid, its unit membership, the unit classification and boundary membership, selected global outcome, stable display order, and round audit. Reads of a completed round invoke neither pairing nor optimisation.
+10. Charge each member of every successful unit their full individual bid. Members of an unsuccessful unit spend zero. A pair's summed score is never an additional debit.
 
-The conceptual hierarchy is: **token bids determine eligibility; global fairness resolves exact boundary ties; randomness resolves only equally fair global solutions.** The optimiser MUST NOT use historic assignments, prior-round tie outcomes, attendance, token balances, bid cost, carry-over, expiry, or any other token-accounting consequence as a fairness input. Fairness is scoped only to boundary-tie wins in the current bidding round.
+The conceptual hierarchy is: **individual token bids determine pairing eligibility; allocation-unit scores determine capacity eligibility; global fairness resolves exact boundary ties; randomness resolves only token-equivalent pairing choices or equally fair global solutions.** Historical outcomes, token balances, unit member count, bid cost, carry-over, expiry, and other accounting consequences are not fairness inputs.
 
-#### 5.4.1 Strict global optimisation objectives
+#### 5.5.1 Strict global optimisation objectives
 
 The optimiser MUST apply these objectives in strict priority order. A later objective MUST never reduce the quality achieved by an earlier one:
 
-1. **Maximise unresolved seat utilisation.** Fill the maximum possible number of unresolved seats. A seat MUST NOT remain unassigned when an eligible employee can receive it.
-2. **Maximise distinct boundary-tie winners.** Among maximum-utilisation solutions, maximise the number of different employees receiving at least one boundary-tie assignment.
-3. **Distribute additional wins by lexicographic max-min fairness.** Among solutions satisfying objectives 1 and 2, count boundary-tie wins for every employee participating in at least one unresolved tie in the round, sort those counts from lowest to highest, and lexicographically maximise the resulting vector. Thus five otherwise equivalent opportunities among three employees produce `2 / 2 / 1`, not `3 / 1 / 1`; six produce `2 / 2 / 2`.
+1. **Maximise unresolved seat utilisation.** Fill the maximum possible number of unresolved seats. A seat MUST NOT remain unassigned when an eligible allocation unit can receive it.
+2. **Maximise distinct fairness identities winning a boundary tie.** Among maximum-utilisation solutions, maximise the number of single/pair identities with at least one boundary win.
+3. **Distribute additional wins by lexicographic max-min fairness.** Count wins for every participating fairness identity, sort counts ascending, and lexicographically maximise the vector. Five equivalent opportunities among three identities produce `2 / 2 / 1`; six produce `2 / 2 / 2`.
 
-The objectives apply to the complete eligibility structure. Constrained opportunities therefore emerge from the global solution rather than a separate priority rule. For example, if Alice is eligible only for Monday while Bob and Carol are eligible for Monday, Tuesday, and Wednesday, with one unresolved seat on each day, every optimal solution assigns Monday to Alice and distributes Tuesday and Wednesday between Bob and Carol. The implementation MUST NOT approximate this by prioritising employees with fewer eligible days or by processing weekdays sequentially.
+The objectives apply to the complete fairness-identity eligibility structure. For example, if identity A is eligible only for Monday while B and C are eligible Monday through Wednesday, every optimal solution assigns Monday to A and distributes the other dates between B and C. The implementation MUST NOT approximate this with a greedy opportunity-count or weekday-order rule.
 
-#### 5.4.2 Final random selection and published order
+#### 5.5.2 Final random selection and published order
 
-When multiple complete allocations are equivalent under all three objectives, the application MUST use the injected random-selection abstraction, backed by a cryptographically secure random generator in production, to choose among those globally optimal solutions. Randomness MUST NOT be applied to individual dates before global optimisation. Every selectable globally optimal solution MUST have equal selection probability, independent of database row, insertion, weekday, collection-iteration, or bid-loading order. The optimiser MUST canonicalise dates, employees, slots, and equivalent solutions by stable identifiers before invoking the selector.
+When multiple complete allocations are equivalent under all three objectives, use the injected random selector, backed by a cryptographically secure generator, to choose uniformly among them. This capacity-boundary randomness is not applied per date. Canonicalize dates, allocation-unit fairness identities, slots, and solutions before invoking it.
 
 The selected solution and its round-level random audit value are persisted in the processing transaction. A retry after rollback may select a different equally optimal solution because no result committed; a `COMPLETED` round MUST never be redrawn, recalculated, or changed.
 
-`algorithm_version` MUST identify the reservation-aware capacity semantics as well as the fairness algorithm. A deployed algorithm version whose input did not include reservations is not reused for newly processed reservation-aware rounds; historical completed rounds retain their original version and result.
+`algorithm_version` MUST identify reservation-aware capacity, half-day unit construction/pairing, and fairness semantics. Version 1.3 rounds MUST use a new algorithm version; historical rounds retain their original versions and results.
 
-Published ranking places assigned bidders above the seat boundary and unsuccessful bidders below it while keeping token ranking visible. Within the boundary token group, the persisted final ordering MUST agree with the selected global outcome and remain stable. No physical seat number is assigned in the current release.
+Published ranking places successful units above the physical-seat boundary and unsuccessful units below it. Pair members are adjacent in one visual group at one unit rank, with morning before afternoon; each member shows their individual bid. No physical seat number is assigned.
 
-### 5.5 Visibility
+### 5.6 Visibility
 
 - Before processing, an employee can see only their own bid set, balance, dates, public round/configuration metadata, and each open-round date's public reservation count, assignable capacity, and description.
-- After processing, all authenticated employees can see all bidders' names, bid amounts, final ordering, and success status for the published round.
+- After processing, all authenticated employees can see all bidders' names, individual bid amounts, attendance periods, persisted unit grouping/order, and success status.
 - Published dates show physical capacity, reserved count, assignable capacity, and the reservation's public description where present.
 - Employees who did not bid on a date do not appear in its participant list.
 
@@ -173,19 +202,20 @@ At each trigger, the service MUST:
 2. Lock the round for write and verify that it has not already been processed.
 3. Load all five target dates, lock their applicable seat reservations, and load all positive bids for the round.
 4. Validate each reservation against the round's physical capacity and calculate each date's assignable capacity.
-5. Determine deterministic token rankings against assignable capacity for every target date and classify every bid as a fixed winner, fixed loser, or member of the exact-token boundary tie.
-6. Establish all fixed assignments and identify the boundary candidates and unresolved assignable capacity for every affected target date.
-7. Construct the complete round-level unresolved allocation problem, solve objectives 1–3 in their strict order, and randomly choose only if multiple globally equivalent optimal solutions remain.
-8. Persist the final result for every positive bid and the round-level allocation audit, including reservation-derived capacity in its canonical input. Persistence MUST be based on the selected complete solution, not partial weekday results.
-9. Persist `BID_SPEND` ledger entries for successful bids only.
-10. Calculate each participant's successful-bid spend, remaining balance, carry-over, and closing balance. Unsuccessful bids do not create a debit or refund entry because they are never spent.
-11. Mark the round `COMPLETED` with `processed_at`.
-12. Create exactly one successor `OPEN` round, snapshot current configuration, validate any existing reservations for its five dates, and create its date rows.
-13. Create participation records for all provisioned employees with `grant + carry-over`.
+5. Partition bids by attendance period, select pairable bids by token rank, resolve only exact-token pairing-selection ties, construct opposite-order complementary pairs, and create all allocation units.
+6. Rank units by combined score against assignable capacity and classify every unit as a fixed winner, fixed loser, or exact-score boundary candidate.
+7. Establish all fixed unit outcomes and identify boundary units and unresolved capacity.
+8. Construct the complete round-level unresolved allocation problem, solve objectives 1–3, and randomly choose only among globally equivalent optimal solutions.
+9. Persist every allocation unit, its members, one individual result per positive bid, and the round audit including reservations, pairing decisions, and unit scores.
+10. Persist `BID_SPEND` for every individual bid belonging to a successful unit only.
+11. Calculate participant spending, remaining balance, carry-over, and closing balance. Unsuccessful unit members receive no debit or refund entry.
+12. Mark the round `COMPLETED` with `processed_at`.
+13. Create exactly one successor `OPEN` round, snapshot configuration, validate reservations, and create its dates.
+14. Create participation records for all provisioned employees with `grant + carry-over`.
 
 These operations SHOULD commit in one transaction. If transaction size later becomes a concern, a staged design is allowed only if externally invisible, restartable, and protected by equivalent constraints.
 
-Database uniqueness constraints MUST prevent duplicate successor rounds, bids, assignments, allocation-audit records, participation records, and ledger effects. The allocation MUST NOT depend on target-date load order, weekday iteration order, employee row order, map/set iteration order, or bid insertion order. Retrying after rollback MUST produce an optimal business result but may select a different equally optimal global solution if no prior solution committed. Once a round is `COMPLETED`, retry and read paths MUST reuse its persisted results without invoking classification, optimisation, or random selection.
+Database constraints MUST prevent duplicate successor rounds, bids, units, unit members, individual results, audit records, participation rows, and ledger effects. Pairing/allocation MUST NOT depend on load, weekday, employee-row, map/set, or insertion order. A rollback retry may select different token-equivalent pairs or an equivalent optimal allocation. A `COMPLETED` round never invokes pairing, classification, optimisation, or randomness again.
 
 ### 6.4 Boundary behavior
 
@@ -386,6 +416,7 @@ Unique `(round_id, employee_id)`. This is the row pessimistically locked for bid
 | `round_date_id` | `bigint` | FK, not null |
 | `participation_id` | `bigint` | FK, not null |
 | `tokens` | `integer` | not null, check `> 0` |
+| `attendance_period` | `varchar(20)` | not null; `FULL_DAY`, `MORNING_ONLY`, or `AFTERNOON_ONLY`; default `FULL_DAY` |
 
 Unique `(round_date_id, participation_id)`. Application code verifies both references belong to the same round.
 
@@ -402,22 +433,41 @@ Unique `(round_date_id, participation_id)`. Application code verifies both refer
 
 The reservation is date-based rather than linked to `round_date` so an administrator can create it before that future round exists. Application validation restricts dates to Monday–Friday, enforces the applicable capacity, and controls the mutation window. Index `target_date` through its unique constraint and index `created_by_employee_id`. Physical deletion is allowed only while the reservation is mutable; once cutoff closes, the row is immutable business/audit data needed by published assignments.
 
-### 9.8 `seat_assignment`
+### 9.8 `allocation_unit`
+
+| Column | Type | Rules |
+|---|---|---|
+| `id` | `bigint` | PK |
+| `round_date_id` | `bigint` | FK, not null |
+| `unit_type` | `varchar(20)` | not null; `SINGLE` or `HALF_DAY_PAIR` |
+| `score_tokens` | `integer` | not null, check `> 0`; individual bid or pair sum |
+| `fairness_identity` | `varchar(128)` | not null; canonical employee/pair identity |
+| `assigned` | `boolean` | not null |
+| `score_rank` | `integer` | not null, `>= 1`; dense rank by descending unit score |
+| `final_rank` | `integer` | not null, `>= 1`; immutable physical-seat/unit order |
+| `resolution` | `varchar(32)` | not null; `FIXED_WINNER`, `FIXED_LOSER`, `GLOBAL_TIE_WINNER`, or `GLOBAL_TIE_LOSER` |
+| `boundary_tie_group` | `varchar(64)` | nullable; date/exact-score boundary identifier |
+| `created_at` | `timestamptz` | not null |
+
+Unique `(round_date_id, final_rank)` and `(round_date_id, fairness_identity)`. Index resolution and boundary group by date. Checks keep `assigned`, `resolution`, and group nullability coherent. A pair and a single each consume one unit rank and at most one physical seat.
+
+### 9.9 `seat_assignment`
 
 | Column | Type | Rules |
 |---|---|---|
 | `id` | `bigint` | PK |
 | `round_date_id` | `bigint` | FK, not null |
 | `bid_id` | `bigint` | FK, not null, unique |
+| `allocation_unit_id` | `bigint` | FK, not null |
 | `assigned` | `boolean` | not null |
-| `token_rank` | `integer` | not null, `>= 1`; dense rank by descending token amount, so equal-token bids share a rank |
-| `final_rank` | `integer` | not null, `>= 1` |
-| `resolution` | `varchar(32)` | not null; `FIXED_WINNER`, `FIXED_LOSER`, `GLOBAL_TIE_WINNER`, or `GLOBAL_TIE_LOSER` |
-| `boundary_tie_group` | `varchar(64)` | nullable; stable identifier for the date's exact-token boundary group |
+| `attendance_period` | `varchar(20)` | not null; immutable copy from the bid |
+| `unit_member_order` | `smallint` | not null; `1` for a single/morning member, `2` for afternoon pair member |
+| `display_rank` | `integer` | not null, `>= 1`; unique employee-row display order within date |
+| `created_at` | `timestamptz` | not null |
 
-Persist one result for every positive bid, including unsuccessful bids. Unique `(round_date_id, final_rank)`. `boundary_tie_group` is a deterministic identifier derived from the round date and boundary token amount, is non-null exactly for global tie winners and losers, and is null for fixed outcomes. Check constraints enforce that `assigned` is true exactly for `FIXED_WINNER` and `GLOBAL_TIE_WINNER`, and that group nullability agrees with `resolution`. Index `(round_date_id, resolution)` and `(round_date_id, boundary_tie_group)`. The bid, snapshotted round capacity, `token_rank`, `resolution`, and group identifier make deterministic ranking and boundary membership auditable. `final_rank` is the immutable published ordering: assigned bidders precede the seat boundary, unsuccessful bidders follow it, and token ordering is preserved outside the resolved boundary group.
+Persist one result for every positive bid, including both members of a pair and every unsuccessful bid. Unique `(round_date_id, display_rank)` and `(allocation_unit_id, unit_member_order)`. A single has only member order 1. A pair has exactly two members: `MORNING_ONLY` at order 1 and `AFTERNOON_ONLY` at order 2. Application validation and scheduler transactions ensure unit/date consistency, member cardinality, period compatibility, and that member `assigned` matches the unit. Pair members have consecutive display ranks and remain visually grouped.
 
-### 9.9 `round_allocation_audit`
+### 9.10 `round_allocation_audit`
 
 | Column | Type | Rules |
 |---|---|---|
@@ -427,14 +477,15 @@ Persist one result for every positive bid, including unsuccessful bids. Unique `
 | `input_fingerprint` | `char(64)` | not null; SHA-256 of the canonical round-level allocation input |
 | `objective_summary` | `jsonb` | not null; canonical object containing filled unresolved slots, distinct tie winners, and sorted tie-win vector |
 | `selected_solution_fingerprint` | `char(64)` | not null; SHA-256 of the canonical selected complete solution |
-| `random_selection_value` | `varchar(255)` | nullable; auditable selector value, seed, or index when equivalent optima required random choice |
+| `pairing_audit` | `jsonb` | not null; canonical majority selection, tie/composition choices, and resulting units per date |
+| `capacity_selection_value` | `varchar(255)` | nullable; audit value for final equivalent-optimum choice |
 | `created_at` | `timestamptz` | not null |
 
-Create exactly one audit row whenever a round is processed, including a round with no boundary ties; in that case the random value is null and the fingerprints still identify the deterministic input and result. The canonical input includes the round snapshot, chronological target dates, each date's reservation identifier/count and resulting assignable capacity, every positive bid with stable employee/bid identifiers and token amount, deterministic classification, boundary eligibility, and unresolved capacities. The canonical selected solution includes every positive bid's final outcome. Both encodings order employees/bids by stable database identifier, are specified by `algorithm_version`, and never depend on query or collection order. Public reservation descriptions are excluded from allocation fingerprints because they cannot affect results. `objective_summary` is diagnostic and MUST be validated against the selected assignments rather than trusted as an input to accounting.
+Create exactly one audit row per processed round. Canonical input includes round/reservation capacity, every bid's stable identifiers, tokens and period, pairing candidate sets, constructed units, score classification, boundary eligibility, and unresolved capacities. The selected-solution encoding includes every unit and individual outcome. `pairing_audit` records enough canonical information to explain deterministic choices and random indexes/seeds used among token-equivalent pairing alternatives. Public reservation descriptions are excluded. All formats are versioned by `algorithm_version` and order-independent.
 
-The random value describes selection among complete globally optimal solutions and therefore belongs at round level, not on individual assignments. The selected outcome itself is fully materialised in `seat_assignment`; reads never reconstruct it from fingerprints or rerun the optimiser. Audit values, algorithm version, persisted assignments, immutable bids and reservations, and the round snapshot together MUST be sufficient to explain capacity, which bids were fixed, which entered boundary resolution, what objective values were achieved, and which final solution committed.
+The capacity selection value describes only selection among complete globally optimal solutions. Pairing randomness is represented separately in `pairing_audit`. Outcomes are fully materialized in `allocation_unit` and `seat_assignment`; reads reconstruct nothing.
 
-### 9.10 `token_ledger`
+### 9.11 `token_ledger`
 
 | Column | Type | Rules |
 |---|---|---|
@@ -447,11 +498,11 @@ The random value describes selection among complete globally optimal solutions a
 | `idempotency_key` | `varchar(255)` | unique, not null |
 | `occurred_at` | `timestamptz` | not null |
 
-The participation row is the efficient balance snapshot; the ledger is the accounting audit source. `BID_SPEND` is written only for a bid whose persisted `seat_assignment.assigned` value is true. Allocation is final before accounting begins; the optimiser does not inspect accounting consequences. Ledger and participation totals MUST reconcile with the selected persisted solution in tests. `EXPIRY` records remaining tokens removed by the carry-over cap.
+The participation row is the efficient balance snapshot; the ledger is the accounting audit source. `BID_SPEND` is written for each individual bid whose unit and assignment are successful. A successful pair therefore produces two separate debits, one for each original bid, and no debit for the summed score. Ledger and participation totals reconcile with individual persisted results.
 
-### 9.11 Panache mapping
+### 9.12 Panache mapping
 
-Use explicit entity classes and repositories, including mappings for `SeatReservation`, `SeatAssignment` resolution metadata, and `RoundAllocationAudit` JSON/fingerprint fields. Avoid exposing entities directly as REST DTOs. Mark associations lazy where practical, prevent N+1 queries with dedicated projections/fetch joins, and use enum converters for state/type values. Database constraints are mandatory even where Bean Validation duplicates them. Scheduler persistence MUST insert the audit and all assignment rows in the same transaction before token accounting and round completion.
+Use explicit entities/repositories for bids with periods, reservations, allocation units, individual assignments, and audit JSON/fingerprints. Do not expose entities as DTOs. Fetch published unit/member projections without N+1 queries. Scheduler persistence inserts units, members/results, audit, and individual ledger effects atomically before completion.
 
 ## 10. Liquibase
 
@@ -459,7 +510,8 @@ Use explicit entity classes and repositories, including mappings for `SeatReserv
   1. `db/changelog/db.changelog-changes.yaml` for versioned database changes;
   2. `db/changelog/grant-permissions.yaml` for runtime-role permissions.
 - `db/changelog/db.changelog-changes.yaml` is the second-level aggregate changelog. It includes ordered change files from `db/changelog/changes/`; the deployed changelog begins with `changes/001-initial-schema.yaml`. Future versioned schema or data changes are added as new, sequentially named files and included from this aggregate rather than directly from the master changelog.
-- `001-initial-schema.yaml` is the deployed baseline and MUST NOT be edited. Every feature that requires a schema or persistent-data change MUST introduce one or more new, sequentially numbered change files under `db/changelog/changes/` and add them to `db.changelog-changes.yaml` in execution order. This applies to the current `employee.is_admin`, `seat_reservation`, `seat_assignment` resolution metadata, and `round_allocation_audit` requirements unless those structures already exist in an applied changeset. New migrations MUST preserve and upgrade existing production data safely, using staged backfills, constraints, and preconditions where required. Existing employees are backfilled with `is_admin = false`; an operator grants the first administrator directly in the database after deployment.
+- All changesets in the version 1.2 baseline are immutable for version 1.3. Use one or more new sequential change files to add `bid.attendance_period`, create/backfill `allocation_unit`, link/reshape individual results, and extend audit data. Existing bids become `FULL_DAY`; every existing assignment becomes a one-member `SINGLE` unit preserving outcome/order. Historical pairing audit is the canonical empty value, and any prior final random value is preserved as capacity-selection audit. Existing completed rounds, ledgers, fingerprints, and algorithm versions are never recalculated or labeled half-day-aware.
+- Apply the migration in safe stages: add nullable/defaulted structures, backfill and validate existing data, then enforce new constraints. Any legacy ranking/audit columns needed to explain deployed history may be retained read-only; new version 1.3 writes use the normalized allocation-unit model.
 - `db/changelog/grant-permissions.yaml` contains the separate `set-permissions` changeset with `runAlways: true`. It runs after all versioned changes and executes `db/sql/grant-permissions.sql` as one PostgreSQL block with statement splitting disabled and comments retained. The SQL grants `SELECT`, `INSERT`, `UPDATE`, and `DELETE` on every non-Liquibase table in the `public` schema and `USAGE` on every sequence in that schema to the role supplied through the Liquibase `${applicationUser}` change-log parameter. The migrator must have authority to issue those grants.
 - The Quarkus Liquibase configuration MUST point to `db/changelog/db.changelog-master.yaml` and provide `applicationUser` from the configured application database username. Permission application therefore covers newly created tables and sequences on every migration run without mixing permission logic into individual versioned change files.
 - A separate idempotent application bootstrap mechanism creates the first bidding round; environment-specific employees and runtime round data MUST NOT be inserted by production changelogs.
@@ -649,6 +701,7 @@ Deletion returns `204 No Content`. It is allowed only while the reservation is m
       "date": "2026-08-10",
       "weekday": "MONDAY",
       "tokens": 20,
+      "attendancePeriod": "MORNING_ONLY",
       "reservedSeatCount": 2,
       "assignableSeatCapacity": 10,
       "reservationDescription": "Customer workshop"
@@ -657,6 +710,7 @@ Deletion returns `204 No Content`. It is allowed only while the reservation is m
       "date": "2026-08-11",
       "weekday": "TUESDAY",
       "tokens": 0,
+      "attendancePeriod": "FULL_DAY",
       "reservedSeatCount": 0,
       "assignableSeatCapacity": 12,
       "reservationDescription": null
@@ -665,7 +719,7 @@ Deletion returns `204 No Content`. It is allowed only while the reservation is m
 }
 ```
 
-The response contains all five dates. `seatCapacity` is the round's physical capacity and every day satisfies `assignableSeatCapacity = seatCapacity - reservedSeatCount`. Reservation fields are public, read-only bidding context and do not change token validation or reveal any other employee's bid. `availableToBid` is the token amount not currently committed by the authenticated employee's editable bid set; it is unrelated to reserved physical seats and is not the post-allocation balance. `serverTime` supports countdown display; `cutoffAt` is authoritative.
+The response contains all five dates. `attendancePeriod` is the saved value for a positive bid and `FULL_DAY` for a zero/no-bid draft. `seatCapacity` is physical capacity and each day satisfies `assignableSeatCapacity = seatCapacity - reservedSeatCount`; these reservation fields remain read-only. `availableToBid` is the employee's uncommitted token amount, not physical-seat availability or post-allocation balance, and attendance period never changes it. `serverTime` supports countdown display; `cutoffAt` is authoritative.
 
 ### 11.6 Replace bids
 
@@ -675,8 +729,8 @@ The response contains all five dates. `seatCapacity` is the round's physical cap
 {
   "roundId": 18,
   "bids": [
-    {"date": "2026-08-10", "tokens": 20},
-    {"date": "2026-08-11", "tokens": 8}
+    {"date": "2026-08-10", "tokens": 20, "attendancePeriod": "MORNING_ONLY"},
+    {"date": "2026-08-11", "tokens": 8, "attendancePeriod": "FULL_DAY"}
   ]
 }
 ```
@@ -685,6 +739,7 @@ Semantics:
 
 - `roundId` prevents a stale page from writing into a successor round.
 - The array represents the complete replacement set; omitted/zero dates become no bid.
+- Each positive entry includes one valid attendance period. During rollout, omission is interpreted as `FULL_DAY`; unknown/null values from a version 1.3 client are rejected.
 - On success return `200` with the same authoritative shape as `GET /api/bidding/current`.
 - Bidding endpoints never accept an email, employee ID, balance, allocation result, or token-spend decision from the client; the acting employee always comes from Quarkus `SecurityIdentity`.
 
@@ -705,23 +760,42 @@ Semantics:
     "reservedSeatCount": 2,
     "assignableSeatCapacity": 10,
     "reservationDescription": "Customer workshop",
-    "assignedCount": 10,
+    "occupiedSeatCount": 10,
+    "assignedEmployeeCount": 11,
     "participants": [{
+      "allocationUnitId": 901,
+      "unitType": "HALF_DAY_PAIR",
+      "unitRank": 4,
+      "unitScoreTokens": 30,
       "employeeId": 42,
       "firstName": "Alex",
       "lastName": "Example",
       "tokens": 20,
+      "attendancePeriod": "MORNING_ONLY",
       "assigned": true,
-      "rank": 4,
+      "displayRank": 4,
       "isCurrentUser": true
+    }, {
+      "allocationUnitId": 901,
+      "unitType": "HALF_DAY_PAIR",
+      "unitRank": 4,
+      "unitScoreTokens": 30,
+      "employeeId": 84,
+      "firstName": "Sam",
+      "lastName": "Example",
+      "tokens": 10,
+      "attendancePeriod": "AFTERNOON_ONLY",
+      "assigned": true,
+      "displayRank": 5,
+      "isCurrentUser": false
     }]
   }]
 }
 ```
 
-Top-level `seatCapacity` is the round's physical capacity. For every day, `assignableSeatCapacity = seatCapacity - reservedSeatCount`; `reservationDescription` is null when none was supplied. `myStatus` is `NO_BID`, `ASSIGNED`, or `NOT_ASSIGNED`. Participants are already ordered by persisted final rank. Provisioned first and last names are always present.
+Top-level `seatCapacity` is physical capacity. `occupiedSeatCount` counts successful allocation units and never exceeds assignable capacity; `assignedEmployeeCount` counts successful individual bids and may be higher because a pair contains two employees. `myStatus` remains individual. Participants are ordered by unit rank and member order; pair members share unit ID/rank/score and are adjacent. Singles use `unitType: SINGLE`, and `unitScoreTokens` equals their individual tokens.
 
-The bidding API is unaffected by global tie resolution, and optimiser internals are not exposed to end users. The published-assignment API returns only the persisted selected result. For a globally resolved equal-token boundary group, assigned members appear above the capacity boundary and unsuccessful members below it in the immutable `final_rank` order.
+The API exposes the persisted unit grouping and combined score needed to explain pairing, but not optimiser/audit internals. For a globally resolved exact-score boundary group, successful units appear above the physical-seat boundary and unsuccessful units below it in immutable unit/member order.
 
 ### 11.8 Help
 
@@ -789,7 +863,7 @@ auth/            activation, Argon2id identity provider, form-auth integration, 
 round/           lifecycle, dates, configuration snapshot
 bidding/         bid queries, validation, replacement
 reservation/     admin authorization, dated reservation lifecycle, capacity calculation
-allocation/      round-level ranking, global fairness optimisation, final selection, result mapping
+allocation/      half-day pairing, unit construction/ranking, global fairness, result mapping
 tokens/          participation balances and ledger
 resource/        REST resource interfaces only
 resource/impl/   REST resource implementation classes
@@ -803,19 +877,20 @@ The package named `api` MUST NOT be used. The `resource` package MUST contain on
 
 The `allocation/` package implements round-level allocation rather than independent per-date draws. It SHOULD separate:
 
-1. deterministic per-date token ranking and classification into fixed winners, fixed losers, boundary candidates, and unresolved capacities;
-2. construction of one immutable round-level unresolved allocation problem;
-3. optimisation of the strict utilisation, distinct-winner, and lexicographic max-min objectives;
-4. final random selection among globally equivalent optimal solutions; and
-5. conversion of the selected complete solution into assignment and audit records.
+1. immutable bid/period input and deterministic majority-side token classification;
+2. injectable token-equivalent pairing selection, opposite-order unit construction, and canonical fairness identities;
+3. deterministic unit-score ranking and boundary classification;
+4. construction/optimisation of one immutable round-level unresolved problem;
+5. final random selection among globally equivalent solutions; and
+6. conversion into unit, individual-result, audit, and accounting inputs.
 
 The core optimiser and fairness logic MUST be pure domain logic without database access. It accepts an immutable canonical problem and returns a complete selected solution plus objective/audit data. The application may use bipartite matching, constrained search, integer optimisation, or another in-process technique appropriate to five target dates and the expected small employee population, but MUST demonstrably preserve the strict objective hierarchy. Do not add an external optimisation service, separate runtime, distributed component, or order-dependent greedy approximation.
 
-Domain services own transactions; resource implementations remain thin and contain no business logic. Inject a `Clock` and a round-level random-selection abstraction so cutoff behavior and final selection among equivalent optimal solutions are deterministic in tests. The selector receives a canonical set or canonical index range of equally optimal complete solutions; it is never called once per target date.
+Domain services own transactions; resource implementations remain thin. Inject `Clock` and labeled random-selection abstractions for majority-boundary choice, equivalent pair composition, and final global solution. Tests control each choice independently. Production uses cryptographically secure randomness and persists every choice.
 
 ### 12.4 Validation
 
-Use Bean Validation for shape constraints and domain validation for cross-field/state rules. The backend MUST independently repeat all client checks. Startup validation rejects impossible configuration. API input limits should cap bid array size at five and reject unknown dates/duplicate JSON entries after normalization. Reservation validation enforces weekday/date, count, description length, date-range limit, uniqueness, applicable capacity, current administrator status, and mutation state inside the transaction.
+Use Bean Validation for shape constraints and domain validation for cross-field/state rules. The backend repeats all client checks. Bid validation includes attendance enum/default semantics and strips period state when zero is normalized away. Reservation validation remains transactional. Allocation-unit validation rejects duplicate membership, invalid pair periods/cardinality, inconsistent score/outcome, and noncanonical fairness identities.
 
 ### 12.5 OpenAPI and health
 
@@ -886,12 +961,15 @@ Between cutoff and the target week, none may be today; no artificial highlight i
 
 Expanding a card displays:
 
-- `assignedCount of assignableSeatCapacity assignable seats assigned`;
+- `occupiedSeatCount of assignableSeatCapacity assignable seats occupied`;
+- assigned employee count when it differs from occupied-seat count;
 - `reservedSeatCount of seatCapacity total seats reserved` when the count is positive;
 - the reservation's public description when present, clearly distinguished from employee assignments;
-- participants by final rank;
+- participants by persisted allocation-unit rank and member order;
 - first and last name (fallback as specified by API);
-- token amount;
+- each employee's individual token amount;
+- `Morning` or `Afternoon` badge for every half-day bidder, including an unmatched half-day single; full-day participants have no period badge;
+- one visually grouped row/card for a pair, containing morning then afternoon member and optionally the combined unit score in secondary explanatory text;
 - a clear boundary after the last assigned bidder;
 - explicit assigned/not-assigned icon/text;
 - a highlight for the current employee.
@@ -903,6 +981,7 @@ Collapsed/expanded state is local UI state. Loading, empty/bootstrap, processing
 The view displays:
 
 - all five next-round weekdays and `dd/MM` dates;
+- one accessible attendance badge/control per date, initially `Full day`, cycling independently through `Full day` → `Morning` → `Afternoon` → `Full day`;
 - each date's read-only reserved-seat count and assignable capacity, with a clear badge/label when the reserved count is positive;
 - the public reservation description beneath the affected date when present;
 - authoritative starting balance, current bid total, and amount still available to bid;
@@ -915,6 +994,9 @@ The view displays:
 Draft behavior:
 
 - Existing saved bids load into fields.
+- The attendance control works by tap/click, keyboard, and screen reader; its current value and cycling behavior are announced and never communicated by color alone.
+- Changing a period affects only that date. It neither changes token input nor causes an immediate server write.
+- A zero-token draft may retain a locally selected period, but saving zero persists no bid/period; reloading that date returns to `Full day`.
 - Reservation information is never editable from the bidding page and is visually distinct from bid inputs. It is shown to ordinary users and administrators on every supported platform, including Android.
 - Edits remain local until **Save bids**; saving replaces all bids atomically.
 - Unsaved changes trigger route/back confirmation where appropriate.
@@ -923,8 +1005,10 @@ Draft behavior:
 - Manual typing may temporarily exceed budget, but fields and summary show an error and saving is disabled.
 - Zero counts as empty and remains eligible for auto-distribution.
 - A positive field disables its auto-distribution selector.
+- Auto-distribution changes token amounts only and preserves every selected attendance period.
 - The UI explains that only successful bids are deducted and that all remaining tokens, including unsuccessful bids, are still subject to the carry-over cap.
 - The UI explains that reservations reduce the seats available for assignment but do not change the employee's token balance, bid limits, or bid price.
+- The UI explains that half-day bids cost the full individual amount, complementary bids may be paired into one higher-scoring unit, and unmatched half-day bids still participate individually.
 
 Auto-distribution:
 
@@ -961,11 +1045,13 @@ Help MUST explain:
 
 - weekly grants, balances, spending, and capped carry-over;
 - placing, changing, saving, and auto-distributing bids;
+- full-day/morning/afternoon selection, full-price half-day bids, complementary pairing, summed pair scores, and standalone unmatched half-day bids;
 - cutoff and privacy before cutoff;
-- token ranking and global boundary-tie fairness, in ordinary language: when several employees make the same bid for the remaining seats, the application considers tied situations across the whole week together and tries to distribute successful tie-breaks as evenly as possible; if several equally fair allocations remain, the final choice is random;
+- allocation-unit scoring and global boundary fairness, in ordinary language: full-day and unmatched half-day bids use their individual tokens, complementary pairs use their combined tokens, and equally scored units competing for remaining seats are considered across the week so successful tie-breaks are spread as evenly as possible; equally fair final choices are random;
 - successful bids being charged, unsuccessful bids remaining unspent, and the carry-over cap;
 - first-time email verification, password creation, persistent form-cookie login, inactivity expiry, and logout;
 - assignment colors, today indicator, participant order, and capacity boundary;
+- half-day badges, grouped complementary pairs, individual versus combined tokens, and why assigned employee count may exceed occupied seats;
 - reserved seats reducing the number available for bidding, with reserved counts, assignable capacity, and public descriptions shown both while bidding and in published assignment cards;
 - surplus/unassigned seats being outside application control;
 - Android reminders where relevant.
@@ -1035,8 +1121,8 @@ Names may be adjusted consistently, but all values must be externally configurab
 
 ```yaml
 seat-bidding:
-  tokens-per-round: 50
-  carry-over-cap: 20
+  tokens-per-round: 60
+  carry-over-cap: 24
   seat-capacity: ${SEAT_CAPACITY}
   scheduler:
     cron: "0 0 22 ? * FRI"
@@ -1134,10 +1220,12 @@ All backend tests and static-analysis/build jobs MUST execute with JDK 25 so loc
 ### 17.1 Backend unit tests
 
 - Balance/grant/carry-over calculations, including successful-bid deductions, cap, and expiry.
-- Successful bids are charged in full; unsuccessful bids create no debit.
+- Successful individual bids are charged in full, including both members of a successful pair; unsuccessful unit members create no debit.
 - Configured physical capacity zero is rejected at startup; reservation-derived assignable capacity zero is supported; fewer/equal/more bidders than assignable capacity.
 - Reservation count validation and `assignableSeatCapacity = physicalSeatCapacity - reservedSeatCount`.
-- Deterministic per-date classification of fixed winners, fixed losers, exact boundary candidates, and unresolved capacities.
+- Attendance default/enum validation, period independence, zero normalization, and auto-distribution preserving periods.
+- Majority-side highest-bid selection, exact-token selection ties, opposite-order pairing, unmatched singles, canonical pair identity, and combined scores.
+- Deterministic unit-score classification of fixed winners, fixed losers, exact boundary candidates, and unresolved capacities.
 - Round-level optimiser objective hierarchy, canonicalisation, and deterministic injected final selector.
 - Friday cutoff, DST transitions, and target-date calculation.
 - Zero normalization and complete bid replacement validation.
@@ -1161,7 +1249,7 @@ D. **Six unresolved seats among three equivalent employees:** the distribution i
 
 E. **Employee with one opportunity:** Alice is eligible only on Monday; Bob and Carol are eligible Monday through Wednesday; one unresolved seat exists per day. Alice always receives Monday, while Bob and Carol receive Tuesday and Wednesday in either order.
 
-F. **Token ranking cannot be overridden:** include fixed higher-token winners, an exact-token boundary group, and lower-token losers. Only boundary-group members are eligible for unresolved slots; no lower bidder displaces a fixed winner or boundary candidate.
+F. **Unit-score ranking cannot be overridden:** include fixed higher-score units, an exact-score boundary group, and lower-score units. Only boundary candidates are eligible; no lower unit displaces a fixed winner or boundary candidate.
 
 G. **Multiple unresolved seats on one date:** a boundary tie crossing multiple remaining capacity positions produces exactly the required winner count, never assigns an employee twice on that date, and participates correctly in round-level fairness.
 
@@ -1193,20 +1281,42 @@ T. **Reservation and global fairness:** reserved capacity changes the actual bou
 
 U. **Non-allocation description:** changing only a mutable public description before cutoff does not affect allocation input semantics, although the current release performs the change through delete/recreate rather than an update endpoint.
 
+V. **Balanced complementary counts:** two morning and two afternoon bids create two pairs; no half-day single remains.
+
+W. **Excess half-day bidders:** morning bids `30, 20, 10` and two afternoon bids select the `30` and `20` morning bidders for pairing; the `10` bidder remains a `SINGLE` and remains fully eligible.
+
+X. **Majority selection boundary tie:** when the final pairable position crosses equal bids, only that exact-token group is randomized. Higher bids always pair and lower bids never displace them.
+
+Y. **Opposite-order pairing:** mornings `100, 50` and afternoons `40, 10` form scores `110` and `90`, not `140` and `60`. Equal-token composition alternatives use the injected pairing selector and are auditable.
+
+Z. **Pair indivisibility and charging:** a winning pair assigns both members and charges both individual bids; a losing pair assigns neither and charges neither. No ledger debit equals the summed score.
+
+AA. **Pair at capacity boundary:** a pair whose combined score is in an exact-score boundary tie is one indivisible fairness candidate and either both members win or both lose.
+
+AB. **Fairness identity across dates:** the same two employee IDs form the same canonical pair identity even with reversed periods; a changed partner is a different identity. Global objective counts follow those identities.
+
+AC. **Assigned employees exceed seats:** two winning pairs occupying two seats produce four assigned employees; occupied units never exceed assignable capacity.
+
+AD. **Unmatched half-day winner:** an unpaired morning/afternoon single may win, pays the full bid, occupies one seat, and displays the half-day badge.
+
+AE. **Reservation plus pairing:** reservations reduce capacity before units compete but do not reduce pair count or score; resulting unit boundary/fairness remains correct.
+
+AF. **Input-order independence:** permuting half-day bids and equal-token candidates with deterministic injected selectors produces the same canonical pairs, units, and selected allocation.
+
 ### 17.2 Integration tests with PostgreSQL
 
 - Liquibase from an empty database and constraint enforcement.
-- Upgrade from the deployed schema adds `employee.is_admin` with existing rows defaulted to false and creates `seat_reservation` without modifying applied changesets or existing business data.
+- Upgrade from the version 1.2 schema adds bid periods and allocation units without modifying baseline changesets; existing bids become full-day and existing assignments become one-member single units with unchanged outcomes/order/audit versions.
 - Pessimistic serialization of simultaneous submissions for the same participant.
 - Independent employees can update concurrently.
 - Cutoff racing with bid update.
 - Admin reservation create/delete racing with cutoff and scheduler processing serializes on the round; no reservation can change after cutoff or after completion.
 - Reservation uniqueness, weekday/date/count/description/capacity constraints and application validation.
 - Non-admin, stale-role-cookie, and removed-admin attempts against `/api/admin/*` return `403`; granting admin takes effect after fresh authentication.
-- Scheduler rollback/retry and no duplicate assignments, bid-spend ledger entries, or successor round.
-- Global processing persists exactly one `round_allocation_audit`, the complete assignment set, canonical fingerprints, objective summary, algorithm version, and random-selection value where applicable in the same transaction.
+- Scheduler rollback/retry and no duplicate units, members/results, ledger entries, or successor round.
+- Processing atomically persists pairing audit, allocation units, individual results, canonical fingerprints, objective summary, and capacity-selection value.
 - Allocation audit input includes reservation identifier/count and assignable capacity but excludes the public description; published reservation data remains stable after completion.
-- Database constraints enforce coherent fixed/global-tie resolution metadata and one immutable result per positive bid.
+- Database/application constraints enforce unit type/cardinality, compatible periods, canonical identity, coherent outcome, consecutive pair display, and one immutable result per positive bid.
 - Round configuration snapshots remain unchanged after runtime configuration changes.
 - Ledger reconciles with participation balances.
 - Ledger and participation values are calculated only after, and reconcile exactly with, the globally selected persisted allocation.
@@ -1228,7 +1338,8 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 - Authentication start, form login, resend, verification, password creation, CSRF, logout, and cookie contracts match the documented OpenAPI operations and cookie security scheme.
 - `/api/me` administrator flag, admin list/create/delete authorization and CSRF contracts, validation limits, and `403`/`404`/`409` responses.
 - Bidding context and successful bid-replacement responses expose physical, reserved, and assignable capacities plus the optional public reservation description for every open-round date without exposing other employees' bids.
-- Published assignments expose physical, reserved, and assignable capacities plus the optional public reservation description.
+- Bidding requests/responses enforce and round-trip attendance periods, including rollout omission as full day and invalid enum rejection.
+- Published assignments expose occupied seats, assigned employees, unit ID/type/rank/score, individual tokens/period/display rank, pair adjacency, and reservation capacities/description.
 - Problem details and all status mappings.
 - Stale `roundId`, dates outside round, duplicate dates, negative/fractional/overspent bids.
 - No employee identifier is accepted or honored.
@@ -1238,10 +1349,12 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 - Widget/golden tests for all assignment colors, today marker, reservation information, assignable-capacity boundary, and responsive layouts.
 - Bid balance, spinner states, carry-over explanation, integer division/remainder, zero behavior, and disabled save.
 - Bidding-page reservation badges/counts, assignable capacity, public description, read-only behavior, all-platform visibility, refresh after save/resume, and preservation of an unsaved draft during same-round metadata refresh.
+- Independent three-state attendance controls: initial/load state, tap cycle, keyboard/screen-reader operation, no color-only state, zero-save reset, period preservation through auto-distribution/save/refresh, and unsaved-change handling.
 - Navigation by tap, keyboard, and swipe; unsaved-change handling.
 - Email-first login branching, password login, pending-code resume, resend cooldown, code verification, password requirements/confirmation, automatic form login after password creation, persistent-cookie restoration, inactivity expiry, CSRF recovery, logout, and generic authentication error states.
 - Platform tests ensure reminders are visible only on Android and Android promotion only in eligible PWA contexts.
 - Desktop PWA tests show the third admin destination and reservation CRUD UI only for admins at the wide breakpoint; compact web and Android never expose the controls or route.
+- Assignment widgets group pair members, show morning/afternoon badges only for half-day bids, suppress full-day badges, distinguish occupied seats from employee count, and preserve persisted unit/member order.
 - End-to-end flow: login, load bids, edit/save, cutoff simulation, published result.
 
 ### 17.5 Acceptance scenarios
@@ -1267,12 +1380,20 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 19. With every physical seat reserved, all positive bidders are unsuccessful, no bid is charged, and the published day clearly shows zero assignable capacity.
 20. After `is_admin` is removed directly in the database, an admin mutation using a previously issued role-bearing cookie is rejected by the mandatory database recheck. No application endpoint can restore the role.
 21. Before placing bids, every employee sees that a date with physical capacity 12 has two reserved seats, ten assignable seats, and the public reservation description. The information is read-only, appears in the bidding context on PWA and Android, does not alter token availability, and remains visible in the published assignment card after processing.
+22. A new bidding draft shows `Full day` on every date. Toggling Monday twice yields `Afternoon` without changing Tuesday or any tokens. Saving a positive bid persists that period; auto-distribution does not alter it.
+23. Morning bids `100, 50` and afternoon bids `40, 10` form two units scoring `110` and `90`. If both units win, all four employees are assigned, two physical seats are occupied, and each employee pays only their individual bid.
+24. With morning bids `30, 20, 10` and two afternoon bids, the `30` and `20` morning bids pair while the `10` morning bid remains an eligible single. It is not automatically rejected for lacking a partner.
+25. A half-day pair tied at the capacity boundary is handled as one indivisible unit. The selected global solution assigns both pair members or neither; individual charging follows that outcome.
+26. The same two employees paired across two dates share one canonical fairness identity even if their periods reverse. If either employee pairs with someone else, that is a different fairness identity.
+27. Published results group a pair's morning and afternoon employees adjacently, show their individual tokens and period badges, and may report more assigned employees than occupied seats. A full-day employee displays no period badge.
+28. Upgrading a populated version 1.2 database sets existing bids to full day and maps every historical assignment to a single allocation unit without changing completed results, ledger entries, published ordering, or historical algorithm version.
 
 ## 18. Observability and operations
 
 - OpenTelemetry is the required instrumentation path for logs, metrics, and traces, while the SDK remains disabled by default. Production operators explicitly enable and configure export through profile YAML and/or environment variables.
 - Structured logs include round ID, employee internal ID where necessary, operation, outcome, and trace ID; never passwords, activation codes/authorizations, authentication cookies, password hashes, encryption/signature keys, SMTP credentials, or unnecessary bid details.
 - OpenTelemetry metrics SHOULD cover bid-save success/failure, scheduler duration/status, bidders per date, boundary-tie candidate and unresolved-slot counts, allocation duration, achieved objective summaries, lock conflicts, and open/completed round counts. Employee identities and complete eligibility patterns MUST NOT be metric labels.
+- Allocation metrics SHOULD include aggregate morning/afternoon/full-day bid counts, pair/single unit counts, and occupied-seat versus assigned-employee counts without identity labels. Pair compositions and bids are not logged or traced as attributes.
 - Authentication metrics SHOULD cover aggregate start/login/activation success and failure, rate limiting, email delivery failure, and form-cookie authentication failure without using email addresses or other high-cardinality personal identifiers as metric labels.
 - Admin reservation metrics SHOULD cover aggregate create/delete success, validation/authorization failure, and conflicts. Structured audit logs record reservation ID, target date, count, acting employee ID, and outcome, but not the public description.
 - OpenTelemetry traces SHOULD cover inbound REST requests, database operations, and scheduled round processing, with custom spans around deterministic classification, global optimisation, final selection, persistence, and accounting where they materially improve diagnosis. Do not record bids, candidate identities, random values, or complete solutions as span attributes.
@@ -1285,21 +1406,17 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 1. Create Quarkus/Flutter projects and shared build packaging.
 2. Add Liquibase schema, Panache entities/repositories, configuration validation, and bootstrap.
 3. Implement employee provisioning schema, SMTP activation, the custom Argon2id Quarkus identity provider, built-in form authentication, Quarkus REST CSRF, and request authorization.
-4. Implement bidding context/replacement with pessimistic locking.
+4. Implement bidding context/replacement with attendance periods and pessimistic locking.
 5. Add administrator-role mapping/revalidation, reservation migration/entity/service/resources, and cutoff-safe concurrency.
-6. Implement deterministic classification using assignable capacity, pure round-level fairness optimisation, canonical final random selection, assignment/audit persistence, ledger derivation, scheduler orchestration, and idempotency.
-7. Implement published assignments and problem/OpenAPI contracts, including public reservation information.
-8. Build Flutter authentication, assignments, bidding, desktop admin reservations, help, and responsive navigation.
+6. Implement pure half-day selection/pairing/unit construction, unit-score classification, round-level fairness, labeled random selectors, normalized persistence/audit, ledger derivation, scheduler orchestration, and idempotency.
+7. Implement published unit/member assignments and problem/OpenAPI contracts, including reservation information.
+8. Build Flutter authentication, attendance-aware bidding, grouped assignments, desktop admin reservations, help, and responsive navigation.
 9. Add Android reminder/platform behavior and PWA promotion while excluding admin management from Android/compact layouts.
 10. Complete integration, migration, authorization, concurrency, accessibility, container, and end-to-end verification.
 
 ## 20. Future extensions
 
-### 20.1 Half-day attendance and seat sharing
-
-Future bidding may allow `FULL_DAY`, `MORNING_ONLY`, or `AFTERNOON_ONLY` per bid. Attendance period does not reduce the bid or token cost. Complementary morning/afternoon employees may share one physical seat, so assigned employee count may exceed seat capacity while physical occupancy does not. Both employees pay their full bids and participate normally. Published assignments must make attendance periods and sharing clear. The precise allocation algorithm, tie behavior, schema, and controls are intentionally deferred; the current release treats every bid and assignment as full-day.
-
-### 20.2 Other deferred enhancements
+### 20.1 Deferred enhancements
 
 - Configurable cadences beyond weekly and corresponding UI semantics.
 - Public holidays, exceptional closures, and configurable workdays.
@@ -1310,11 +1427,14 @@ Future bidding may allow `FULL_DAY`, `MORNING_ONLY`, or `AFTERNOON_ONLY` per bid
 - Kubernetes StatefulSet deployment with ordinal-zero scheduler activation.
 - Historical browsing, analytics, exports, and privacy/retention controls beyond the latest published round.
 - Localization beyond the initial language and date convention.
+- Configurable attendance time ranges, half-day discounts, manual pairing, pair preferences, and employee-level fairness attribution across changing half-day partners.
 
 ## 21. Definition of done
 
-Version 1.2 is complete when all mandatory rules in this document are implemented, the backend builds, tests, and runs on Java 25, the full Liquibase changelog provisions an empty PostgreSQL database and safely upgrades the deployed schema, concurrency and scheduler idempotency tests pass against PostgreSQL, SMTP-backed first-time activation works for provisioned employees, the Argon2id identity provider and Quarkus form authentication/REST CSRF satisfy the security, cookie-renewal, and inactivity-expiry tests, the PWA is served from the Java 25-compatible Jib-built Quarkus image, bid privacy is verified, and the responsive PWA supports the complete core workflow without the optional Android app.
+Version 1.3 is complete when all mandatory rules in this document are implemented, the backend builds/tests/runs on Java 25, Liquibase provisions an empty PostgreSQL database and safely upgrades version 1.2 data, security and concurrency requirements pass against PostgreSQL, the PWA is served from the Jib-built Quarkus image, bid privacy is verified, and the responsive PWA supports the complete workflow without requiring the optional Android app.
 
-Allocation completion specifically requires deterministic token ranking to remain authoritative; every round's boundary ties to be solved as one global problem; maximum unresolved-seat utilisation; maximum distinct boundary-tie winners; lexicographic max-min distribution of additional wins; unbiased randomness only among solutions equivalent under every preceding objective; canonical input-order-independent behavior; stable persisted assignments and round-level audit data; retry without modification of completed results; and successful-bid-only token accounting derived exclusively from the persisted final allocation. All global-fairness, constrained-opportunity, multiple-slot, order-independence, persistence, retry, accounting, and acceptance scenarios in section 17 MUST pass.
+Allocation completion requires individual token authority during pairing selection; opposite-order complementary pairing; eligible unmatched half-day singles; indivisible pair units scored by bid sum; unit-score capacity ranking; global fairness over canonical single/pair identities; maximum utilisation, distinct winners, and lexicographic max-min distribution; randomness only among token-equivalent pairing choices or globally equivalent solutions; order independence; stable persisted units/member results/audit; and individual successful-bid-only accounting.
 
 The administration extension is complete when `is_admin` is manually maintainable but never application-manageable; backend authorization and current-database revalidation protect every admin operation; a newly numbered Liquibase migration preserves the deployed schema/data; desktop PWA admins can list, create, and delete valid reservations; compact web, ordinary users, and Android expose no management UI; cutoff makes reservations immutable; allocation uses reservation-derived assignable capacity; every employee sees read-only reservation counts, assignable capacity, and descriptions while bidding; published assignments show the same reservation information; and all migration, authorization, concurrency, capacity, UI, and acceptance tests in section 17 pass.
+
+The half-day extension is complete when independent accessible three-state controls round-trip through the API; deployed data migrates to full-day single units without historical changes; pairing, unit ranking, fairness, persistence, display, and charging satisfy sections 5–9; paired members are grouped with badges and individual bids; occupied seats are distinguished from assigned employees; and every half-day, integration, contract, Flutter, migration, and acceptance test in section 17 passes.

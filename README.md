@@ -64,6 +64,7 @@ The packaged application uses `application-prod.yaml` plus shared `application.y
 - Authentication secrets: `ACTIVATION_CODE_PEPPER`, `AUTH_SESSION_ENCRYPTION_KEY`, and `CSRF_TOKEN_SIGNATURE_KEY` (independent random values of at least 32 characters; use high entropy)
 - Browser policy: `AUTH_ALLOWED_WEB_ORIGINS` as exact HTTPS origins
 - Optional tuning: activation limits, form-cookie timeout/renewal/max-age, rate limits, Argon2id parameters, and `PASSWORD_BLOCKLIST_RESOURCE`
+- Round defaults: `TOKENS_PER_ROUND` defaults to `60`; `CARRY_OVER_CAP` defaults to `24`
 - Reverse proxy: set `PROXY_ADDRESS_FORWARDING=true` only when forwarded headers come from a trusted proxy configuration
 
 TLS terminates at the reverse proxy/platform boundary. Keep the application private behind that boundary, mount `/logs` when `LOG_TO_FILE=true`, and rotate SMTP and authentication secrets through the deployment secret store. Rotating the CSRF signature key invalidates current CSRF proofs, rotating the activation pepper invalidates pending activation codes, and rotating the form-session encryption key invalidates all authentication cookies. With signing enabled, Quarkus returns the random header token in `X-CSRF-TOKEN` from `GET /api/auth/csrf`; the readable cookie contains its HMAC signature and is deliberately a different value.
@@ -107,15 +108,15 @@ where employee_id = (select id from employee where email = lower(btrim('employee
 commit;
 ```
 
-The deployed `001-initial-schema` and `002-global-fairness-allocation` migrations remain immutable. Migration `003-administrator-seat-reservations` adds administrator flags and dated seat reservations without changing completed allocations. Historical assignments retain their published order, audit data, and algorithm version.
+The deployed version 1.2 migrations `001-initial-schema`, `002-global-fairness-allocation`, and `003-administrator-seat-reservations` remain immutable. Migration `004-half-day-allocation-units` adds attendance periods and normalized allocation units in staged changesets. It backfills existing bids as full-day and historical results as one-member single units without recalculating completed rounds. Historical assignments retain their published order, audit data, fingerprints, ledger entries, and algorithm version.
 
 The authenticated bidding context and successful bid-replacement response include the round's physical capacity plus each date's reserved count, assignable capacity, and optional public description. These values are read-only context and do not participate in token validation, auto-distribution, or charging.
 
-### Allocation audit encoding v3
+### Allocation audit encoding v4
 
-Allocation fingerprints use a versioned canonical UTF-8 line encoding with LF separators. Null reservation IDs and boundary groups use `-`. Dates are ordered by target date and stable date ID; bids and results are ordered by stable bid ID within each date. The input starts with `seat-bidding-allocation-input|v3`, followed by the round ID and physical capacity, each date ID/date/reservation ID/reserved count/assignable capacity/unresolved-seat count, and every positive bid's date ID, bid ID, employee ID, tokens, dense token rank, deterministic classification, and boundary group. Public reservation descriptions are deliberately excluded because they cannot influence allocation. The selected solution starts with `seat-bidding-allocation-solution|v3` and records each result's date ID, bid ID, assigned flag, token rank, immutable final rank, resolution, and boundary group. Stored fingerprints are lowercase SHA-256 hex digests of these exact encodings. Completed `v2` rounds are never reinterpreted.
+Allocation fingerprints use a versioned canonical UTF-8 line encoding with LF separators. Null reservation IDs and boundary groups use `-`. Dates are chronological; units use canonical `EMPLOYEE:<id>` or unordered `PAIR:<lowerId>:<higherId>` fairness identities; members use stable bid identifiers. The `v4` input records physical/reserved/assignable capacity, canonical pairing audit, every constructed unit, score classification, and every member's tokens and attendance period. Public reservation descriptions are excluded. The selected solution records every persisted unit and member outcome, including score/unit rank and individual display rank. Stored fingerprints are lowercase SHA-256 hex digests. Completed rounds using older algorithm versions are never reinterpreted.
 
-Changing the encoding or allocation semantics requires a new algorithm version. Audit fingerprints and objective JSON are diagnostic only; persisted `seat_assignment.assigned` values are the accounting source.
+Pairing randomness is recorded only in `pairing_audit`; selection among complete globally equivalent capacity solutions is recorded separately in `capacity_selection_value`. Changing the encoding or allocation semantics requires a new algorithm version. Audit values are diagnostic only; persisted allocation-unit and member results are the accounting and read source.
 
 A due bidding round is still processed by `RoundProcessingService.processDueRound()`. Operational retries must call that same idempotent service or restart before the next configured trigger; never repair assignments or ledger rows with ad-hoc inserts.
 

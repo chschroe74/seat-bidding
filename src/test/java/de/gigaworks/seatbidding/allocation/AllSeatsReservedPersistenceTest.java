@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Test;
 @QuarkusTestResource(value = de.gigaworks.seatbidding.support.PostgresTestResource.class,
         restrictToAnnotatedClass = true)
 class AllSeatsReservedPersistenceTest {
+
     @Inject BiddingRoundRepository rounds;
     @Inject RoundDateRepository dates;
     @Inject EmployeeRepository employees;
@@ -78,8 +79,9 @@ class AllSeatsReservedPersistenceTest {
             assertEquals(AllocationResolution.FIXED_LOSER, result.resolution);
             assertEquals(0, result.bid.participation.successfulBidTokens);
             assertEquals(0, ledger.count("round.id = ?1 and type = ?2", completed.id, LedgerType.BID_SPEND));
-            assertEquals("v3", audits.findForRound(completed.id).orElseThrow().algorithmVersion);
+            assertEquals("v4", audits.findForRound(completed.id).orElseThrow().algorithmVersion);
             assertEquals(1, reservations.count("targetDate", result.roundDate.targetDate));
         });
     }
+
 }
