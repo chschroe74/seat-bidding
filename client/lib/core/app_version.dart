@@ -1,0 +1,1 @@
+const applicationVersion = '1.3.1';

@@ -1,7 +1,10 @@
+import 'dart:io';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:seat_bidding/core/api_client.dart';
+import 'package:seat_bidding/core/app_version.dart';
 import 'package:seat_bidding/core/auth_service.dart';
 import 'package:seat_bidding/core/managed_cookie_store.dart';
 import 'package:seat_bidding/core/models.dart';
@@ -10,6 +13,16 @@ import 'package:seat_bidding/features/settings/settings_screen.dart';
 import 'package:seat_bidding/features/settings/skip_reminders_screen.dart';
 
 void main() {
+    test('display version matches the semantic pubspec version', () {
+        final pubspec = File('pubspec.yaml').readAsStringSync();
+        final declaredVersion = RegExp(
+            r'^version:\s*([^+\s]+)',
+            multiLine: true,
+        ).firstMatch(pubspec)?.group(1);
+
+        expect(applicationVersion, declaredVersion);
+    });
+
     testWidgets('disabled reminders hide schedule and device controls', (
         tester,
     ) async {
@@ -32,6 +45,21 @@ void main() {
         expect(api.settings.bidRemindersEnabled, isTrue);
         expect(find.text('Start reminders on'), findsOneWidget);
         expect(find.text('Reminder time: 10:00 Europe/Berlin'), findsOneWidget);
+    });
+
+    testWidgets('shows the version without the platform build number', (
+        tester,
+    ) async {
+        final api = _FakeApi(_settings(enabled: false));
+        await tester.pumpWidget(
+            MaterialApp(
+                home: SettingsScreen(api: api, webPush: _FakeWebPushClient()),
+            ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('Version 1.3.1'), findsOneWidget);
+        expect(find.textContaining('+2'), findsNothing);
     });
 
     testWidgets('enrollment requires its own gesture and registers the browser', (

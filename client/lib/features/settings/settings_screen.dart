@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../../core/api_client.dart';
+import '../../core/app_version.dart';
 import '../../core/models.dart';
 import '../../core/web_push_client.dart';
 
@@ -178,6 +179,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         style: TextStyle(color: Theme.of(context).colorScheme.error),
                     ),
                 ],
+                const SizedBox(height: 32),
+                const Divider(),
+                Center(
+                    child: Text(
+                        'Version $applicationVersion',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                    ),
+                ),
             ],
         );
     }
