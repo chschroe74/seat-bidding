@@ -87,12 +87,12 @@ quarkus:
         rotate-on-boot: false
   smallrye-openapi:
     info-title: Office Seat Bidding API
-    info-version: 1.3.0
+    info-version: 1.3.1
   container-image:
     registry: ghcr.io
     group: chschroe74
     name: seat-bidding
-    tag: 1.3.0
+    tag: 1.3.1
     build: false
     push: false
   jib:

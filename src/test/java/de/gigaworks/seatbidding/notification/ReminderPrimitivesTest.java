@@ -6,10 +6,13 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.interaso.webpush.VapidKeys;
+import com.interaso.webpush.WebPush;
 import de.gigaworks.seatbidding.exception.ApplicationProblem;
 import de.gigaworks.seatbidding.exception.ConfigurationException;
 import io.quarkus.scheduler.Scheduled;
 import java.net.InetAddress;
+import java.net.URI;
 import java.time.DayOfWeek;
 import java.time.Instant;
 import java.time.LocalTime;
@@ -21,6 +24,9 @@ class ReminderPrimitivesTest {
 
     private static final String P256DH = base64(key(65, (byte) 4));
     private static final String AUTH = base64(key(16, (byte) 1));
+    private static final String VAPID_PUBLIC_KEY =
+            "BJ7tFVi60Tw6Y0xchiuEZjd62SBdsK0_-zDEk3W-blZy0hB5UUUkbiq6BZxeN5529gkofV463kj-WAaBib5vxYY";
+    private static final String VAPID_PRIVATE_KEY = "I4dqtEfeVxGFPO5i0TJugmklqM_g8uzIa-xwrgMMLok";
 
     @Test
     void weekdaysBecomeEligibleWithoutIncludingTheWeekend() {
@@ -94,8 +100,26 @@ class ReminderPrimitivesTest {
         assertEquals(PushDeliveryOutcome.ACCEPTED, StandardsWebPushTransport.classify(201).outcome());
         assertEquals(PushDeliveryOutcome.PERMANENT_FAILURE, StandardsWebPushTransport.classify(404).outcome());
         assertEquals(PushDeliveryOutcome.PERMANENT_FAILURE, StandardsWebPushTransport.classify(410).outcome());
+        assertEquals(PushDeliveryOutcome.TEMPORARY_FAILURE, StandardsWebPushTransport.classify(403).outcome());
         assertEquals(PushDeliveryOutcome.TEMPORARY_FAILURE, StandardsWebPushTransport.classify(429).outcome());
         assertEquals(PushDeliveryOutcome.TEMPORARY_FAILURE, StandardsWebPushTransport.classify(500).outcome());
+    }
+
+    @Test
+    void transportBuildsAProviderSpecificSignedVapidAuthorizationHeader() {
+        var keys = VapidKeys.fromUncompressedBytes(VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+        var webPush = new WebPush("mailto:test@test.invalid", keys);
+        var endpoint = URI.create("https://updates.push.services.mozilla.com/wpush/v2/subscription");
+
+        var headers = StandardsWebPushTransport.headers(webPush, endpoint, 43200, "reminder-topic");
+        String authorization = headers.get("Authorization");
+
+        assertTrue(authorization.startsWith("vapid t=ey"));
+        assertTrue(authorization.contains("k=" + VAPID_PUBLIC_KEY));
+        assertFalse(authorization.contains(endpoint.toASCIIString()));
+        assertEquals("aes128gcm", headers.get("Content-Encoding"));
+        assertEquals("43200", headers.get("TTL"));
+        assertEquals("reminder-topic", headers.get("Topic"));
     }
 
     private static PushEndpointValidator validator(List<InetAddress> addresses) {

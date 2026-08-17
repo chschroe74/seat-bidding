@@ -10,12 +10,15 @@ import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.io.IOException;
+import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
+import java.util.Locale;
+import java.util.Map;
 
 @ApplicationScoped
 @DefaultBean
@@ -53,19 +56,29 @@ public class StandardsWebPushTransport implements WebPushTransport {
                     Base64.getUrlDecoder().decode(message.auth()));
             var request = HttpRequest.newBuilder(endpoint).timeout(requestTimeout)
                     .POST(HttpRequest.BodyPublishers.ofByteArray(body));
-            webPush.getHeadersWithToken(endpoint.toASCIIString(), timeToLiveSeconds, message.topic(),
-                    WebPush.Urgency.Normal).forEach(request::header);
+            headers(webPush, endpoint, timeToLiveSeconds, message.topic()).forEach(request::header);
             int status = client.send(request.build(), HttpResponse.BodyHandlers.discarding()).statusCode();
-            return classify(status);
+            var result = classify(status);
+            if (result.outcome() != PushDeliveryOutcome.ACCEPTED) {
+                warnFailure(result);
+            }
+            return result;
         }
         catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
-            return SendResult.temporary(null);
+            var result = SendResult.temporary(null);
+            warnFailure(result);
+            return result;
         }
         catch (IOException | RuntimeException exception) {
-            log.warn("operation=web-push-send outcome=temporary-failure providerStatus=none");
-            return SendResult.temporary(null);
+            var result = SendResult.temporary(null);
+            warnFailure(result);
+            return result;
         }
+    }
+
+    static Map<String, String> headers(WebPush webPush, URI endpoint, int timeToLiveSeconds, String topic) {
+        return webPush.getHeaders(endpoint.toASCIIString(), timeToLiveSeconds, topic, WebPush.Urgency.Normal);
     }
 
     static SendResult classify(int status) {
@@ -76,6 +89,12 @@ public class StandardsWebPushTransport implements WebPushTransport {
             return SendResult.permanent(status);
         }
         return SendResult.temporary(status);
+    }
+
+    private static void warnFailure(SendResult result) {
+        String outcome = result.outcome().name().toLowerCase(Locale.ROOT).replace('_', '-');
+        Object providerStatus = result.providerStatus() == null ? "none" : result.providerStatus();
+        log.warn("operation=web-push-send outcome={} providerStatus={}", outcome, providerStatus);
     }
 
 }
