@@ -11,6 +11,7 @@ import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.core.UriInfo;
 import java.util.Locale;
+import java.util.Set;
 import lombok.extern.slf4j.Slf4j;
 import org.jboss.resteasy.reactive.server.ServerExceptionMapper;
 
@@ -19,6 +20,15 @@ public class ExceptionMappers {
     
     private static final String MIME_TYPE = "application/problem+json";
     private static final String INTERNAL_ERROR = "INTERNAL_ERROR";
+    private static final String REJECTED_LOG_MESSAGE =
+            "operation=http-request outcome=rejected path={} status={} code={} traceId={}";
+    private static final Set<String> OPTIONAL_BROWSER_PROBES = Set.of(
+            "/flutter.js.map",
+            "/favicon.ico",
+            "/apple-touch-icon.png",
+            "/apple-touch-icon-precomposed.png",
+            "/apple-touch-icon-120x120.png",
+            "/apple-touch-icon-120x120-precomposed.png");
     
     @ServerExceptionMapper
     public Response mapApplicationProblem(ApplicationProblem problem, UriInfo uriInfo) {
@@ -109,8 +119,18 @@ public class ExceptionMappers {
     }
 
     private static void warnRejected(UriInfo uriInfo, int status, String code, String traceId) {
-        log.warn("operation=http-request outcome=rejected path={} status={} code={} traceId={}",
-                uriInfo.getPath(), status, code, traceId);
+        String path = uriInfo.getPath();
+        if (status == 404 && isOptionalBrowserProbe(path)) {
+            log.debug(REJECTED_LOG_MESSAGE, path, status, code, traceId);
+        }
+        else {
+            log.warn(REJECTED_LOG_MESSAGE, path, status, code, traceId);
+        }
+    }
+
+    static boolean isOptionalBrowserProbe(String path) {
+        String absolutePath = path.startsWith("/") ? path : "/" + path;
+        return OPTIONAL_BROWSER_PROBES.contains(absolutePath);
     }
 
     private static void warnValidationRejected(UriInfo uriInfo, int violationCount, String traceId) {
