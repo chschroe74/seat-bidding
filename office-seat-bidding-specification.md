@@ -1,20 +1,20 @@
 # Office Seat Bidding Application — Implementation Specification
 
 **Status:** Approved implementation specification  
-**Target release:** Version 1.3  
+**Target release:** Version 1.4  
 **Primary client:** Flutter Progressive Web App (PWA)  
 **Optional client:** Native Flutter Android application  
 **Backend:** Java 25, Quarkus, PostgreSQL, Hibernate ORM with Panache, Liquibase, application-managed authentication, Quarkus Scheduler, standards-based Web Push, Jib
 
 ## 1. Purpose
 
-The application distributes a limited number of office seats fairly among employees. Employees receive tokens for each bidding round and privately bid for individual weekdays, optionally indicating morning-only or afternoon-only attendance. Administrators may reserve physical seats before allocation, and employees see those reservations while deciding their bids. Opted-in employees may register one or more web-capable devices and receive daily reminders until they place a positive bid or suppress reminders for the current round. At cutoff, the backend subtracts reservations from capacity, forms complementary half-day sharing pairs, ranks full-day employees, unpaired half-day employees, and half-day pairs as allocation units, resolves capacity-boundary ties globally across the round using fairness-aware allocation, publishes assignments, deducts only successful individual bids, and opens the next round.
+The application distributes a limited number of office seats fairly among employees. Employees receive tokens for each bidding round and privately bid for individual weekdays, optionally indicating morning-only or afternoon-only attendance. Administrators may reserve physical seats before allocation, and employees see those reservations while deciding their bids. Opted-in employees may register one or more web-capable devices and receive bid reminders and time-sensitive seat-offer notifications. At cutoff, the backend subtracts reservations from capacity, forms complementary half-day sharing pairs, ranks full-day employees, unpaired half-day employees, and half-day pairs as allocation units, resolves capacity-boundary ties globally across the round using fairness-aware allocation, publishes immutable original results, deducts only successful individual bids, and opens the next round. During the published target week, employees may relinquish assignments, eligible unsuccessful bidders may claim released capacity in original-bid order, and employees who did not bid may book remaining open capacity first-come, first-served.
 
-This document is the authoritative version 1.3 implementation contract. Requirements marked **MUST**, **SHOULD**, and **MAY** have their conventional meanings.
+This document is the authoritative version 1.4 implementation contract. Requirements marked **MUST**, **SHOULD**, and **MAY** have their conventional meanings.
 
 ## 2. Scope
 
-### 2.1 Version 1.3 goals
+### 2.1 Version 1.4 goals
 
 - Support one office and one shared seat capacity for every weekday.
 - Run one weekly round covering Monday through Friday.
@@ -25,12 +25,18 @@ This document is the authoritative version 1.3 implementation contract. Requirem
 - Keep all employees' open-round bids private.
 - Maintain auditable token balances and round results.
 - Let manually designated administrators create and delete dated seat reservations through a desktop-only PWA section before the affected assignments are processed.
-- Let employees manage synchronized bid-reminder preferences and registered Web Push devices from a settings page available on desktop and mobile.
+- Let employees independently manage synchronized bid-reminder and seat-offer notification preferences plus registered Web Push devices from a settings page available on desktop and mobile.
 - Send one server-driven reminder per eligible weekday to every active registered device until the employee places a positive bid or suppresses reminders for that round.
+- Let an employee relinquish their own active full-day or half-day assignment through the end of its target date, after explicit confirmation.
+- Return the relinquished assignment's original individual bid as non-carryable credit usable only for post-allocation bookings in the same published target week.
+- Offer released capacity for up to 24 hours, but never beyond the target date, to affordable compatible unsuccessful bidders in descending original individual-bid tiers, with first-come-first-served claiming inside an exact-token tier.
+- Let employees who did not bid for a date book compatible capacity that was already surplus or became open after an offer ended, using an attendance-period-specific fixed price and first-come-first-served concurrency.
+- Preserve the immutable original allocation, fairness audit, bids, and original bid spending while exposing an auditable current-occupancy history.
+- Provide a separate opt-in for prompt seat-offer notifications while reusing registered Web Push devices.
 - Serve the compiled Flutter PWA and REST API from one Quarkus application image.
 - Optionally distribute a native Android client using the same API.
 
-### 2.2 Explicitly out of scope for version 1.3
+### 2.2 Explicitly out of scope for version 1.4
 
 - Administrative functions other than dated seat reservations, including employee provisioning and administrator-role management.
 - Public-holiday and office-closure handling.
@@ -39,7 +45,9 @@ This document is the authoritative version 1.3 implementation contract. Requirem
 - Non-weekly or overlapping round cadences in the UI.
 - Kubernetes or multiple active scheduler instances.
 - Guaranteed notification delivery, SMS reminders, and guaranteed offline bidding.
-- Managing unassigned seats or employees who attend without an assignment.
+- Named physical desks, employee-to-desk selection, or administrator-managed post-allocation assignment overrides.
+- Carrying relinquishment credits beyond their published target week or converting them into ordinary/carry-over tokens.
+- Re-running, rewriting, or re-optimising a completed round after relinquishment or later booking.
 
 ## 3. Terminology and time model
 
@@ -53,7 +61,7 @@ This document is the authoritative version 1.3 implementation contract. Requirem
 - **Allocation unit:** One indivisible capacity competitor for one target date: one full-day bidder, one unpaired half-day bidder, or one complementary morning/afternoon pair. Every successful unit consumes one physical seat.
 - **Half-day pair:** One morning-only bid and one afternoon-only bid combined into a single allocation unit. Its ranking score is the sum of both individual bids, but each employee retains their own bid and accounting result.
 - **Fairness identity:** The stable identity used to count round-level boundary-tie wins. A single unit uses its employee ID; a pair uses the canonical unordered combination of both employee IDs.
-- **Carry-over:** The capped portion of the balance remaining after successful bids are deducted. Tokens committed to unsuccessful bids remain unspent.
+- **Carry-over:** The capped portion of the ordinary balance remaining after post-allocation spending and successful bids are deducted. Tokens committed to unsuccessful bids remain unspent; relinquishment credits are separate and never carry.
 - **Seat reservation:** One administrator-created record that removes a positive number of physical seats from bidding for one future Monday–Friday date and may include a public description.
 - **Business time zone:** The single configured IANA zone used for round calendars, allocation cutoff scheduling, reminder scheduling, weekday interpretation, and user-facing business times.
 - **Push subscription / registered device:** One browser-generated Web Push endpoint and encryption-key set bound to the authenticated employee and one browser installation. One employee may have multiple active subscriptions.
@@ -61,6 +69,14 @@ This document is the authoritative version 1.3 implementation contract. Requirem
 - **Round reminder suppression:** An irreversible employee choice to stop further bid reminders for one open bidding round. It expires by scope when the successor round becomes current and does not disable future rounds.
 - **Physical seat capacity:** The round's configured `seatCapacity` snapshot before reservations.
 - **Assignable seat capacity:** `physicalSeatCapacity - reservedSeatCount` for a target date. It may be zero even though configured physical capacity must be positive.
+- **Original allocation:** The immutable units, ranks, success results, bid charges, and fairness audit committed when a round is processed. Post-allocation activity never rewrites it.
+- **Active occupancy:** The current employees holding morning and/or afternoon capacity after applying original assignments, relinquishments, waiting-list claims, and open bookings.
+- **Relinquishment:** An authenticated employee's irreversible release of their own active assignment or later booking for one date and attendance period. An original assignment relinquishment creates one non-carryable credit; relinquishing a later booking creates no further refund.
+- **Relinquishment credit:** A separately accounted token credit equal to the relinquished original individual bid. It may fund post-allocation bookings in the same published target week, is spent before ordinary tokens, and expires without carry-over after the final target date.
+- **Released-capacity offer:** A 24-hour-or-shorter opportunity created by relinquishment and made available in descending original individual-bid tiers to compatible unsuccessful bidders before the capacity becomes openly bookable.
+- **Offer candidate:** An originally unsuccessful bidder whose compatible waiting-list tier has been reached for a released-capacity offer. Candidate eligibility and its final outcome are persisted even after the offer progresses.
+- **Open booking:** A first-come-first-served post-allocation booking of otherwise available morning, afternoon, or full-day capacity by an employee who did not bid for that date, plus the narrowly defined original-relinquisher rebooking exception.
+- **Ordinary post-allocation funds:** Tokens not currently committed to bids in the current `OPEN` round. Spending them on a current-week claim or open booking immediately reduces that round's available-to-bid amount and eventual carry-over basis.
 - **Cutoff:** An instant computed by the backend from the allocation Quartz cron expression and shared business time zone.
 
 All persisted instants MUST use UTC (`timestamptz`/`Instant`). Target and reminder business dates use `date`/`LocalDate`. Both scheduled methods interpret their cron expressions in the shared business time zone, including daylight-saving transitions. The JVM, container, database, and client-device default zones are never authoritative for business rules.
@@ -79,9 +95,10 @@ The following settings come from Quarkus application configuration and are valid
 | Allocation scheduler enabled | `true` | boolean |
 | Bid-reminder scheduler cron | `0 0 10 ? * MON-FRI` | valid Quarkus/Quartz cron representing one fixed local-time trigger on every Monday–Friday |
 | Bid-reminder scheduler enabled | `true` | boolean |
+| Minimum open-booking price | `1` | integer `>= 1`; used only when the required historical comparison price does not exist |
 | Lock timeout | deployment-specific, recommended 5 seconds | positive duration |
 
-Every round MUST snapshot the first three business values, cutoff instant, shared business time zone, and schedule-derived target dates. Changing round configuration MUST affect only subsequently created rounds, not an already open or completed round. Reminder weekday evaluation for an open round uses that round's snapshotted zone; deployments MUST change the shared business time zone only at a round boundary so the scheduler trigger and open-round calendar cannot disagree.
+Every round MUST snapshot the token grant, carry-over cap, seat capacity, minimum open-booking price, cutoff instant, shared business time zone, and schedule-derived target dates. Changing round configuration MUST affect only subsequently created rounds, not an already open or completed round. Reminder weekday evaluation for an open round uses that round's snapshotted zone; deployments MUST change the shared business time zone only at a round boundary so the scheduler trigger and open-round calendar cannot disagree.
 
 Reservations do not change the snapshotted physical capacity. The reservation applicable to a target date is read and locked during round processing, and its count determines that date's assignable capacity.
 
@@ -91,19 +108,25 @@ Reservations do not change the snapshotted physical capacity. The reservation ap
 
 1. The current release has exactly one open round and it contains five consecutive target dates, Monday through Friday. Weekends are excluded; public holidays are treated as ordinary weekdays.
 2. Each participating employee receives the round's token grant plus carry-over from the preceding round.
-3. After allocation, remaining balance is `startingBalance - successfulBidTokens`. Carry-over is `min(carryOverCap, remainingBalance)`.
+3. At round completion, remaining balance is `startingBalance - postAllocationSpendTokens - successfulBidTokens`. Carry-over is `min(carryOverCap, remainingBalance)`.
 4. The next starting balance is `tokensGrantedPerRound + carryOver`.
 5. A manually provisioned employee appearing during an open round immediately receives the full standard grant for that round; it is not prorated. There is no historic carry-over for that employee unless explicitly migrated.
-6. The sum of an employee's positive bids MUST NOT exceed the employee's round starting balance.
-7. Submitted tokens are reserved for the current bid set, so their total cannot exceed the starting balance. At processing, only bids that receive a seat are spent.
+6. The sum of an employee's positive bids plus ordinary post-allocation spending charged to that participation MUST NOT exceed the employee's round starting balance.
+7. Submitted bid tokens are reserved for the current bid set, so their total cannot exceed `startingBalance - postAllocationSpendTokens`. At processing, only bids that receive a seat are additionally spent.
 8. Tokens not bid and tokens committed to unsuccessful bids remain unspent and are eligible for carry-over.
 9. Balances and ledger entries use non-negative whole integers only.
+10. Post-allocation claims and open bookings are paid first from unexpired relinquishment credits belonging to the same published target week and then from uncommitted ordinary tokens in the current `OPEN` round. A payment may combine both sources.
+11. Ordinary tokens committed to current open-round bids are unavailable for post-allocation payment. A successful post-allocation payment immediately increases that participation's separately tracked post-allocation spend and reduces both `availableToBid` and the balance on which eventual carry-over is calculated.
+12. Relinquishing an original successful assignment creates credit equal to that employee's original individual bid. It does not reverse the original `BID_SPEND`, change the completed participation, alter carry-over already granted, or rewrite the allocation audit.
+13. Relinquishing a waiting-list claim, open booking, or rebooking releases its capacity but creates no refund or second credit. This prevents repeated release/rebooking cycles from manufacturing reusable value.
+14. Relinquishment credits are scoped to the published round and expire at `00:00` immediately after its final target date in the round's business time zone. They never enter an open-round participation, bid budget, carry-over calculation, or successor grant.
+15. Affordability is evaluated and payment is committed under the same database lock as the capacity claim. A stale client-supplied balance, price, credit amount, or funding split is never authoritative.
 
 ### 5.2 Bid rules
 
 - An employee may bid once per target date; a submission replaces the employee's complete five-date bid set atomically.
 - Every positive bid stores one attendance period: `FULL_DAY`, `MORNING_ONLY`, or `AFTERNOON_ONLY`.
-- `FULL_DAY` is the independent default for every date. During the version 1.3 rollout, an omitted period on a positive bid is interpreted as `FULL_DAY`; version 1.3 clients always send it explicitly.
+- `FULL_DAY` is the independent default for every date. A legacy omitted period on a positive bid is interpreted as `FULL_DAY`; version 1.4 clients always send it explicitly.
 - Bids may be replaced any number of times while the round is `OPEN` and before its cutoff instant.
 - Zero is equivalent to no bid and MUST be removed or omitted in persistence. A no-bid date has no persisted period and starts as `FULL_DAY` in a new draft.
 - Negative, fractional, duplicate-date, out-of-round, weekend, or over-budget bids are invalid.
@@ -120,7 +143,7 @@ Reservations do not change the snapshotted physical capacity. The reservation ap
 4. If the date belongs to the current `OPEN` round, creation and deletion are allowed only strictly before its cutoff. If no round yet contains the future date, the reservation remains mutable until that date is included in an open round and its cutoff is reached.
 5. The reserved count MUST NOT exceed the applicable physical capacity: use the containing open round's snapshotted capacity when present and otherwise the current configured capacity. A future capacity change that would place an existing reservation above capacity is invalid and MUST be rejected before the affected round is opened.
 6. The description is optional, trimmed, plain text, and at most 500 Unicode code points. An empty normalized description is stored as null. It is visible to every authenticated user in the published assignment view, so the admin UI MUST state that it is public and it MUST never be interpreted as markup.
-7. Deletion removes the reservation record. Once the mutation window closes, the reservation is immutable together with the resulting assignments; the current release has no override, update, cancellation, or post-processing adjustment.
+7. Deletion removes the reservation record. Once the mutation window closes, the reservation and its effect on original allocation capacity are immutable; the current release has no reservation override, update, cancellation, or post-processing adjustment. Later employee occupancy events never release or consume administratively reserved capacity.
 8. Reservations consume no tokens, create no bid or seat-assignment record, do not identify an attendee, and never enter deterministic ranking, global fairness, or random selection. They reduce capacity before bid classification begins.
 
 For each target date, `assignableSeatCapacity = physicalSeatCapacity - reservedSeatCount`, where a missing reservation means zero reserved seats. The backend MUST reject inconsistent data rather than silently clamp a negative result.
@@ -179,6 +202,8 @@ The selected solution and its round-level random audit value are persisted in th
 
 `algorithm_version` MUST identify reservation-aware capacity, half-day unit construction/pairing, and fairness semantics. Version 1.3 rounds MUST use a new algorithm version; historical rounds retain their original versions and results.
 
+Version 1.4 does not change Friday allocation, pairing, ranking, fairness, or random selection and therefore does not require a new allocation algorithm version solely for post-allocation occupancy. Its later events are versioned/audited separately and never enter the allocation fingerprint.
+
 Published ranking places successful units above the physical-seat boundary and unsuccessful units below it. Pair members are adjacent in one visual group at one unit rank, with morning before afternoon; each member shows their individual bid. No physical seat number is assigned.
 
 ### 5.6 Visibility
@@ -186,7 +211,9 @@ Published ranking places successful units above the physical-seat boundary and u
 - Before processing, an employee can see only their own bid set, balance, dates, public round/configuration metadata, and each open-round date's public reservation count, assignable capacity, and description.
 - After processing, all authenticated employees can see all bidders' names, individual bid amounts, attendance periods, persisted unit grouping/order, and success status.
 - Published dates show physical capacity, reserved count, assignable capacity, and the reservation's public description where present.
-- Employees who did not bid on a date do not appear in its participant list.
+- Employees who did not bid on a date do not appear in its immutable original-participant list; a later open booker appears only in current occupancy.
+- After publication, every authenticated employee may see current occupants, their attendance periods, and whether occupancy originated in the original allocation or was obtained later. Original participants remain visible with their immutable original result even after relinquishment.
+- Required open-booking prices are visible to authenticated users. Waiting-list candidate history, affordability, controls, and response outcomes are visible only to the affected employee; funding sources, balances, and notification settings are never public.
 
 ### 5.7 Bid-reminder rules
 
@@ -204,13 +231,79 @@ Published ranking places successful units above the physical-seat boundary and u
 12. Browser/operating-system notification denial or revocation is independent of the server preference. The application cannot override it and must show current-device guidance where detectable. A registered device entry is not a guarantee that the operating system will display a notification.
 13. Web Push is best effort. Focus modes, browser/OS policy, connectivity, expired subscriptions, vendor push services, and application downtime may prevent or delay delivery. The product MUST never claim guaranteed delivery or that a notification was seen.
 
+### 5.8 Post-allocation capacity and relinquishment
+
+The original allocation remains immutable. Current capacity is derived from active occupancy for the published round date:
+
+- `morningOccupied` counts active `FULL_DAY` and `MORNING_ONLY` occupants;
+- `afternoonOccupied` counts active `FULL_DAY` and `AFTERNOON_ONLY` occupants;
+- `morningAvailable = assignableSeatCapacity - morningOccupied`;
+- `afternoonAvailable = assignableSeatCapacity - afternoonOccupied`;
+- full-day capacity is available only when both availability values are positive;
+- current occupied physical seats are `max(morningOccupied, afternoonOccupied)` and never exceed assignable capacity.
+
+The backend may pair current complementary half-day occupants conceptually for capacity calculation and display, but it never changes original allocation-unit membership or fairness history. Administrator-reserved capacity is never releasable or bookable.
+
+An employee may relinquish their own active original assignment or later booking until the target-date end instant, defined as `00:00` at the start of the following calendar day in the completed round's business time zone. The action requires an explicit confirmation that it is irreversible, may cause another employee to receive the capacity, and does not guarantee that the releasing employee can obtain it again.
+
+Relinquishment applies to the employee's own attendance period. Either member of an original half-day pair may relinquish independently; the other member remains active. Releasing `FULL_DAY` opens one morning and one afternoon slot, which may later be consumed by one full-day occupant or by separate compatible half-day occupants. Releasing a half-day assignment opens only its matching period.
+
+An original assignment relinquishment creates exactly one credit under section 5.1. A later booking may also be relinquished, but it creates no refund or replacement credit. Every relinquishment appends an immutable occupancy event and, while usable capacity remains, creates a released-capacity offer. The employee who caused an offer is excluded from that offer's waiting-list candidates.
+
+### 5.9 Released-capacity waiting-list offers
+
+Only originally unsuccessful positive bids for the same round date participate in the waiting list. Candidate order uses each employee's original **individual** bid, not a half-day pair's combined allocation-unit score. A candidate is compatible when their original attendance period fits the currently available morning/afternoon capacity; a full-day bid requires both periods. An employee who already actively occupies capacity on the date is excluded.
+
+Each released-capacity offer has one immutable deadline: the earlier of exactly 24 hours after relinquishment and the target-date end instant. Progression to later bid tiers never resets or extends it.
+
+Offer progression follows these rules transactionally:
+
+1. Consider compatible remaining candidates in descending original individual-bid tiers.
+2. Activate the highest tier that can use currently unpromised released capacity. All exact-token candidates in that tier become offer candidates; where multiple compatible slots exist, lower tiers may also activate immediately once remaining capacity exceeds the number of affordable pending candidates able to consume it.
+3. At activation, atomically calculate each candidate's ability to pay their original individual bid from the sources in section 5.1. An unaffordable candidate is immediately and permanently recorded as `AUTO_DECLINED_INSUFFICIENT_FUNDS` for that offer, receives no notification, does not reserve capacity, does not block progression, and is not reconsidered if their balance later changes.
+4. An affordable candidate becomes `PENDING` and may claim or decline. Exact-token candidates compete first-come, first-served for compatible remaining capacity. Claiming rechecks the deadline, active occupancy, candidate state, affordability, and funding under lock, records payment, creates active occupancy, and changes the candidate to `CLAIMED` atomically.
+5. Manual decline changes the candidate to `DECLINED` permanently for that offer. When every still-relevant candidate in a tier has declined, become unaffordable, lost available capacity to another candidate, or otherwise reached a terminal state, advance immediately while capacity and time remain.
+6. When another tied candidate consumes the last compatible capacity, pending competitors become `CLAIMED_BY_OTHER`. At the deadline, remaining pending candidates become `EXPIRED`.
+7. If no compatible waiting-list candidate remains before the deadline, capacity becomes openly bookable immediately. Otherwise any capacity still unclaimed at the deadline becomes openly bookable without waiting for another 24-hour interval.
+
+When several relinquishments overlap on one date, the date-capacity lock coordinates them as one aggregate capacity problem while retaining each release's own deadline and audit lineage. An employee may have at most one `PENDING` compatible candidate opportunity for that date at a time and is associated with the earliest-deadline offer able to serve it; duplicate notifications for simultaneous releases are forbidden. Claims consume compatible aggregate capacity and attribute it deterministically to the earliest-deadline/lowest-ID offer. Lower tiers may activate when aggregate remaining capacity exceeds the number of affordable higher-tier candidates that could still consume it. No pending candidate owns capacity before a successful claim, so tied first-come semantics remain intact.
+
+Candidate records and their terminal outcomes remain visible to the affected employee in the expanded assignment card. For every employee whose tier was activated, both **Claim seat** and **Decline** remain present: enabled only while `PENDING`, and disabled afterward with a textual status explaining `Claimed`, `Declined`, `Insufficient tokens`, `Claimed by another eligible employee`, or `Offer expired`. This persisted history is informational and does not make a previous bidder eligible for open booking.
+
+### 5.10 Open booking
+
+Capacity is openly bookable when it was surplus immediately after original allocation, when no compatible waiting-list candidate remains, or when a released-capacity offer reaches its deadline. Open booking remains available until the target-date end instant and is strictly first-come, first-served.
+
+Ordinary open booking is limited to an employee who placed no bid for that round date and does not already actively occupy that date. The employee selects `FULL_DAY`, `MORNING_ONLY`, or `AFTERNOON_ONLY`; the backend enables only choices compatible with current capacity. Booking after a day or attendance period has begun is allowed and still costs the complete applicable price.
+
+The fixed open-booking price is calculated from the immutable original allocation:
+
+- `FULL_DAY`: the lowest successful original allocation-unit score;
+- `MORNING_ONLY`: the lowest original individual bid among successful employees whose original attendance covered the morning (`FULL_DAY` or `MORNING_ONLY`);
+- `AFTERNOON_ONLY`: the lowest original individual bid among successful employees whose original attendance covered the afternoon (`FULL_DAY` or `AFTERNOON_ONLY`);
+- if the applicable comparison set is empty, use the configured minimum open-booking price.
+
+With positive assignable capacity, an entirely empty comparison set normally means nobody bid for the relevant period. If all seats are administratively reserved, no capacity is bookable and the fallback price is irrelevant.
+
+The one exception to the no-bid rule is an employee who relinquished their original successful assignment. After its waiting-list offer has ended or exhausted candidates, that employee may rebook openly only the same original attendance period, if compatible capacity remains, and pays exactly their original individual bid rather than the ordinary open-booking price. This rule applies to any compatible free capacity on that date, because seats are unnamed and the employee cannot select a supposedly different seat to bypass the price. The original relinquishment credit may fund the rebooking under the normal credit-first payment order.
+
+An employee whose original bid was unsuccessful may never bypass the waiting list through open booking for that date, including after declining, automatic decline, losing a first-come race, or offer expiry. A later open booking creates no bid, allocation unit, fairness result, or retroactive success; it creates separate active occupancy and an auditable post-allocation payment.
+
+### 5.11 Seat-offer notifications
+
+Seat-offer notifications are a separate employee-level explicit opt-in, defaulting to disabled, and reuse all active registered Web Push devices. Changing this preference never enables/disables bid reminders and never creates or removes a device subscription.
+
+When an affordable candidate first becomes `PENDING`, persist one logical notification intent for that candidate and offer after the eligibility transaction commits. Send it independently to every active device then registered. Unaffordable, automatically declined candidates receive no notification. Delivery success, delay, or failure never changes the deadline, candidate state, order, affordability, or first-come result.
+
+The notification identifies the target date and attendance period, states that the opportunity is time-sensitive and first-come-first-served where tied, and deep-links to the corresponding assignment card. It contains no colleague identity, competing bid, balance, device secret, or guarantee that capacity remains available. Notification actions may open the application but MUST NOT claim or decline directly; both decisions require an authenticated, CSRF-protected request against refreshed state.
+
 ## 6. Round lifecycle and scheduler
 
 ### 6.1 States
 
 `OPEN -> PROCESSING -> COMPLETED`
 
-`FAILED` MAY be used for operational visibility, provided retry behavior is explicit and safe. A completed round is immutable. State transitions and timestamps are persisted.
+`FAILED` MAY be used for operational visibility, provided retry behavior is explicit and safe. A completed round's original allocation is immutable; section 6.6 appends current-occupancy events without changing round status. State transitions and timestamps are persisted.
 
 ### 6.2 Initialization
 
@@ -232,14 +325,15 @@ At each trigger, the service MUST:
 8. Construct the complete round-level unresolved allocation problem, solve objectives 1–3, and randomly choose only among globally equivalent optimal solutions.
 9. Persist every allocation unit, its members, one individual result per positive bid, and the round audit including reservations, pairing decisions, and unit scores.
 10. Persist `BID_SPEND` for every individual bid belonging to a successful unit only.
-11. Calculate participant spending, remaining balance, carry-over, and closing balance. Unsuccessful unit members receive no debit or refund entry.
-12. Mark the round `COMPLETED` with `processed_at`.
-13. Create exactly one successor `OPEN` round, snapshot configuration, validate reservations, and create its dates.
-14. Create participation records for all provisioned employees with `grant + carry-over`.
+11. Create one active original `seat_occupancy` row per successful individual assignment and one capacity-state row per date using individual attendance periods; pair membership remains unchanged in the original result.
+12. Calculate participant spending, remaining balance, carry-over, and closing balance. Unsuccessful unit members receive no debit or refund entry.
+13. Mark the round `COMPLETED` with `processed_at`.
+14. Create exactly one successor `OPEN` round, snapshot configuration including the minimum open-booking price, validate reservations, and create its dates.
+15. Create participation records for all provisioned employees with `grant + carry-over`.
 
 These operations SHOULD commit in one transaction. If transaction size later becomes a concern, a staged design is allowed only if externally invisible, restartable, and protected by equivalent constraints.
 
-Database constraints MUST prevent duplicate successor rounds, bids, units, unit members, individual results, audit records, participation rows, and ledger effects. Pairing/allocation MUST NOT depend on load, weekday, employee-row, map/set, or insertion order. A rollback retry may select different token-equivalent pairs or an equivalent optimal allocation. A `COMPLETED` round never invokes pairing, classification, optimisation, or randomness again.
+Database constraints MUST prevent duplicate successor rounds, bids, units, unit members, individual results, original occupancy, capacity-state rows, audit records, participation rows, and ledger effects. Pairing/allocation MUST NOT depend on load, weekday, employee-row, map/set, or insertion order. A rollback retry may select different token-equivalent pairs or an equivalent optimal allocation. A `COMPLETED` round never invokes pairing, classification, optimisation, or randomness again; only section 6.6's append-only occupancy lifecycle may change current occupancy.
 
 ### 6.4 Boundary behavior
 
@@ -261,6 +355,14 @@ At each trigger, the service MUST:
 6. Mark permanently rejected/expired subscriptions inactive when the vendor response establishes that they can no longer be used. Temporary failures are recorded but are not retried by a polling scheduler.
 
 The uniqueness claim makes duplicate scheduler invocation safe, but external Web Push is not an exactly-once transport. A push-service acceptance response means only that the vendor accepted the request; it does not prove device display or user visibility.
+
+### 6.6 Post-allocation lifecycle
+
+Post-allocation state changes are request/event driven; they do not re-run round allocation and do not require a minute-based polling scheduler. Every read derives whether an offer has expired from its persisted deadline and the authoritative current instant. A claim/open-booking transaction first materializes any required `EXPIRED` candidate transitions and open-capacity state under lock before deciding the request. An optional coarse housekeeping job MAY materialize expired offers and credit expiry for operational cleanliness, but correctness MUST NOT depend on that job running on time.
+
+Relinquishment, candidate activation, automatic insufficient-funds outcomes, manual decline, claims, open bookings, later relinquishments, and credit expiry are append-only auditable transitions. Current occupancy is a projection of those transitions plus the immutable original assignments. No transition changes a completed round to another lifecycle status.
+
+Prompt seat-offer delivery is triggered from a notification intent persisted atomically with candidate activation. External network delivery occurs only after commit and never while holding capacity, participation, or offer locks. A failed push does not retry eligibility or extend an offer. Any retry mechanism MUST use the persisted logical-intent and per-subscription uniqueness keys so it cannot create duplicate business effects.
 
 ## 7. Authentication, identity, and security
 
@@ -349,6 +451,8 @@ Android uses the same form login endpoint and encrypted authentication cookie. I
 - TLS is mandatory outside local development. Apply CSP, HSTS at the HTTPS boundary, secure headers, request-size limits, dependency scanning, secret rotation procedures, and redaction of authentication and personal data in logs.
 - Web Push subscription endpoints and authentication keys are capability-bearing secrets. Return them only where strictly required to register the current authenticated browser; never expose one employee's subscription material to another employee or include it in logs, metrics, traces, problem details, analytics, or notification payloads.
 - Validate submitted push endpoints as bounded HTTPS URLs without user information, fragments, loopback/private/link-local destinations, or unsafe redirects. Outbound delivery MUST defend against SSRF and connect only to validated browser push-service endpoints. VAPID private keys are external secrets; only the public application-server key may be returned to an authenticated client.
+- Post-allocation mutation endpoints authorize ownership from `SecurityIdentity` and reload occupancy/candidate/funding state inside the transaction. Guessing another employee's occupancy, candidate, offer, booking, or credit ID must return a non-enumerating result and never disclose affordability or response history.
+- Seat-offer links carry only non-authoritative route context. A push action, deep link, service worker, or URL cannot relinquish, claim, decline, or book without an authenticated CSRF-protected foreground request and refreshed confirmation where required.
 - Passwords, activation codes, activation authorizations, authentication cookies, stored hashes, session-encryption/CSRF/VAPID private keys, push subscription secrets, and SMTP credentials MUST never be returned by ordinary APIs or written to logs, metrics, or traces.
 
 ## 8. Concurrency and transactions
@@ -368,6 +472,12 @@ Scheduler processing locks the due round. Password creation locks the employee a
 Reservation creation/deletion runs transactionally. When the target date belongs to an existing round, the service locks that round before rechecking state and cutoff; scheduler processing takes the same round lock before locking/reading reservations. A unique target-date constraint prevents duplicate reservations. Concurrent admin operations that lose the race return `409` with an authoritative refreshed state. Authorization is revalidated from the current employee database row inside the mutation transaction.
 
 Notification preference updates and subscription registration/removal are transactional and scoped to the authenticated employee. Suppression creation locks or otherwise atomically validates the current open round and is idempotent for the employee/round pair. The reminder scheduler claims a unique employee/round/business-date dispatch before external delivery; concurrent or repeated invocations cannot create a second logical dispatch or a second attempt for the same subscription. Network calls MUST NOT hold locks on bidding, participation, or round-allocation rows.
+
+Every relinquishment, waiting-list decision, claim, and open booking is transactional and locks a single canonical per-date post-allocation capacity row before any employee participation/credit rows. All implementations use the same lock order: published round/date capacity, offer(s) in stable ID order, authenticated employee funding rows, then affected candidate rows. This prevents two first-come requests from consuming the same morning/afternoon slot and avoids deadlocks between bid replacement and post-allocation spending.
+
+Post-allocation payment that uses ordinary tokens locks the employee's current open-round participation, includes existing bid commitments and prior post-allocation spending in the affordability calculation, and commits funding with occupancy. Concurrent bid replacement must take the same participation lock before validating its total. Relinquishment-credit rows are locked in earliest-expiry/ID order and consumed before ordinary tokens. A losing race or stale offer version returns `409` with refreshed authoritative assignment state; it never partially debits tokens, consumes credit, or changes occupancy.
+
+Candidate-tier activation and progression are idempotent. Unique constraints prevent duplicate candidate records, notification intents, occupancy, original-assignment credits, and payments. Expiry materialization, notification delivery, retries, and repeated client requests cannot repeat a business transition. External Web Push calls occur after commit and outside all business locks.
 
 ## 9. Database model
 
@@ -420,6 +530,7 @@ There is at most one current activation row per employee. Resend replaces the di
 | `tokens_granted` | `integer` | not null, check `>= 0` |
 | `carry_over_cap` | `integer` | not null, check `>= 0` |
 | `seat_capacity` | `integer` | not null, check `>= 1` |
+| `minimum_open_booking_price` | `integer` | not null, check `>= 1` |
 | `processing_started_at` | `timestamptz` | nullable |
 | `processed_at` | `timestamptz` | nullable |
 | `predecessor_round_id` | `bigint` | nullable FK, unique |
@@ -448,7 +559,8 @@ Unique `(round_id, target_date)` and `(round_id, ordinal)`. Application validati
 | `carried_in_tokens` | `integer` | not null, `>= 0` |
 | `starting_balance` | `integer` | not null, `grant + carried in` |
 | `successful_bid_tokens` | `integer` | not null, default `0` |
-| `remaining_balance` | `integer` | nullable until completion; `starting_balance - successful_bid_tokens` |
+| `post_allocation_spend_tokens` | `integer` | not null, default `0`; ordinary tokens spent while this is the current open participation |
+| `remaining_balance` | `integer` | nullable until completion; `starting_balance - successful_bid_tokens - post_allocation_spend_tokens` |
 | `carried_out_tokens` | `integer` | nullable until completion |
 
 Unique `(round_id, employee_id)`. This is the row pessimistically locked for bid replacement.
@@ -538,14 +650,17 @@ The capacity selection value describes only selection among complete globally op
 | `employee_id` | `bigint` | FK, not null |
 | `round_id` | `bigint` | FK, not null |
 | `bid_id` | `bigint` | nullable FK |
-| `type` | `varchar(32)` | `GRANT`, `CARRY_IN`, `BID_SPEND`, `EXPIRY` |
+| `participation_id` | `bigint` | nullable FK to the participation whose ordinary balance changed |
+| `post_allocation_booking_id` | `bigint` | nullable FK, populated for a post-allocation payment |
+| `relinquishment_credit_id` | `bigint` | nullable FK, populated for credit creation/use/expiry |
+| `type` | `varchar(32)` | `GRANT`, `CARRY_IN`, `BID_SPEND`, `POST_ALLOCATION_SPEND`, `RELINQUISHMENT_CREDIT`, `CREDIT_SPEND`, `CREDIT_EXPIRY`, or `EXPIRY` |
 | `amount` | `integer` | signed, non-zero |
 | `idempotency_key` | `varchar(255)` | unique, not null |
 | `occurred_at` | `timestamptz` | not null |
 
-The participation row is the efficient balance snapshot; the ledger is the accounting audit source. `BID_SPEND` is written for each individual bid whose unit and assignment are successful. A successful pair therefore produces two separate debits, one for each original bid, and no debit for the summed score. Ledger and participation totals reconcile with individual persisted results.
+The participation row is the efficient ordinary-balance snapshot; the ledger is the accounting audit source. `BID_SPEND` is written for each individual bid whose unit and assignment are successful. A successful pair therefore produces two separate debits, one for each original bid, and no debit for the summed score. Credit creation, credit-first consumption, ordinary post-allocation consumption, and credit expiry use separate entries so neither the completed participation nor previously granted carry-over is rewritten. Ledger, participation, booking funding, and credit totals must reconcile.
 
-### 9.12 `employee_notification_settings
+### 9.12 `employee_notification_settings`
 
 | Column | Type | Rules |
 |---|---|---|
@@ -553,12 +668,13 @@ The participation row is the efficient balance snapshot; the ledger is the accou
 | `employee_id` | `bigint` | FK, not null, unique |
 | `bid_reminders_enabled` | `boolean` | not null, default `false` |
 | `bid_reminder_start_weekday` | `varchar(16)` | not null, default `MONDAY`; Monday–Friday only |
+| `seat_offer_notifications_enabled` | `boolean` | not null, default `false` |
 | `created_at` | `timestamptz` | not null |
 | `updated_at` | `timestamptz` | not null |
 
-The row may be created lazily; absence has the same external meaning as disabled with `MONDAY` retained as the default. Disabling reminders changes only the enabled flag and preserves the weekday and subscriptions.
+The row may be created lazily; absence has the same external meaning as both notification types disabled with `MONDAY` retained as the reminder default. Each preference changes independently and preserves the weekday and subscriptions.
 
-### 9.13 `web_push_subscription
+### 9.13 `web_push_subscription`
 
 | Column | Type | Rules |
 |---|---|---|
@@ -579,7 +695,7 @@ The row may be created lazily; absence has the same external meaning as disabled
 
 Index active subscriptions by employee. Endpoint and key material are capability-bearing secrets. A user removal or permanent vendor rejection deactivates the row and SHOULD clear usable endpoint/key material while retaining only the hash and non-sensitive audit metadata. Re-registration may safely reactivate/upsert the same employee/hash after validating a fresh browser subscription; an endpoint already bound to a different employee is never silently reassigned.
 
-### 9.14 `bid_reminder_suppression
+### 9.14 `bid_reminder_suppression`
 
 | Column | Type | Rules |
 |---|---|---|
@@ -590,7 +706,7 @@ Index active subscriptions by employee. Endpoint and key material are capability
 
 Unique `(round_id, employee_id)`. Rows are immutable and are never deleted or bypassed through the application. A suppression affects only its round.
 
-### 9.15 `bid_reminder_dispatch
+### 9.15 `bid_reminder_dispatch`
 
 | Column | Type | Rules |
 |---|---|---|
@@ -621,9 +737,86 @@ Unique `(round_id, employee_id, business_date)`. Checks keep counts and terminal
 
 Unique `(dispatch_id, push_subscription_id)`. Never persist response bodies, endpoint URLs, encryption keys, payload ciphertext, or vendor correlation data that may contain secrets.
 
-### 9.17 Panache mapping
+### 9.17 `round_date_capacity_state`
 
-Use explicit entities/repositories for bids with periods, reservations, allocation units, individual assignments, audit JSON/fingerprints, notification settings, subscriptions, suppressions, and dispatch/attempt records. Do not expose entities as DTOs. Fetch published unit/member projections and notification eligibility without N+1 queries. Round processing inserts units, members/results, audit, and individual ledger effects atomically before completion; reminder dispatch persistence uses separate short transactions around external network calls.
+| Column | Type | Rules |
+|---|---|---|
+| `id` | `bigint` | PK |
+| `round_date_id` | `bigint` | FK, not null, unique |
+| `morning_occupied` | `integer` | not null, `>= 0` |
+| `afternoon_occupied` | `integer` | not null, `>= 0` |
+| `updated_at` | `timestamptz` | not null |
+
+This row is the canonical per-date lock anchor and efficient current-capacity snapshot. Round processing creates it from successful individual assignments: full-day increments both counters and each half-day increments its matching counter. Both counters must remain at or below assignable capacity. Every later occupancy transaction locks and reconciles this row; it never replaces the immutable original allocation records.
+
+### 9.18 `seat_occupancy`
+
+| Column | Type | Rules |
+|---|---|---|
+| `id` | `bigint` | PK |
+| `round_date_id` | `bigint` | FK, not null |
+| `employee_id` | `bigint` | FK, not null |
+| `attendance_period` | `varchar(20)` | `FULL_DAY`, `MORNING_ONLY`, or `AFTERNOON_ONLY` |
+| `source_type` | `varchar(24)` | `ORIGINAL_ASSIGNMENT`, `WAITLIST_CLAIM`, `OPEN_BOOKING`, or `ORIGINAL_REBOOKING` |
+| `original_seat_assignment_id` | `bigint` | nullable FK; required for original assignment/rebooking lineage |
+| `status` | `varchar(16)` | `ACTIVE` or `RELINQUISHED` |
+| `occupied_at` | `timestamptz` | not null |
+| `relinquished_at` | `timestamptz` | nullable |
+| `created_at` | `timestamptz` | not null |
+
+Use a partial unique index allowing at most one `ACTIVE` occupancy per employee and round date. Original round processing creates occupancy for every successful individual result without changing pair membership. Checks enforce coherent status/timestamps and source lineage.
+
+### 9.19 `assignment_relinquishment` and `relinquishment_credit`
+
+`assignment_relinquishment` records one immutable release per occupancy: `id`, unique `seat_occupancy_id`, employee/date/period snapshots, `released_at`, `offer_deadline`, whether the source was an original assignment, and optional unique credit reference. The deadline must be after release and no later than the target-date end instant.
+
+`relinquishment_credit` contains `id`, unique original `seat_assignment_id`, `employee_id`, published `round_id`, `initial_tokens > 0`, `remaining_tokens >= 0`, `expires_at`, `created_at`, and optional `fully_consumed_at`/`expired_at`. Only relinquishment of an original successful assignment creates it. Database/application checks keep remaining value at or below initial value and terminal timestamps coherent.
+
+### 9.20 `released_capacity_offer` and `seat_offer_candidate`
+
+`released_capacity_offer` contains `id`, unique `assignment_relinquishment_id`, `round_date_id`, released attendance period, initial morning/afternoon capacity vector, immutable `deadline`, status (`ACTIVE`, `EXHAUSTED`, `FILLED`, or `EXPIRED`), and timestamps.
+
+`seat_offer_candidate` contains:
+
+| Column | Type | Rules |
+|---|---|---|
+| `id` | `bigint` | PK |
+| `offer_id` | `bigint` | FK, not null |
+| `bid_id` | `bigint` | FK, not null |
+| `employee_id` | `bigint` | FK, not null |
+| `attendance_period` | `varchar(20)` | immutable original bid period |
+| `tier_tokens` | `integer` | original individual bid, `> 0` |
+| `required_tokens` | `integer` | equal to original individual bid |
+| `status` | `varchar(40)` | `PENDING`, `CLAIMED`, `DECLINED`, `AUTO_DECLINED_INSUFFICIENT_FUNDS`, `CLAIMED_BY_OTHER`, or `EXPIRED` |
+| `offered_at` | `timestamptz` | not null |
+| `responded_at` | `timestamptz` | nullable |
+| `created_at` | `timestamptz` | not null |
+
+Unique `(offer_id, bid_id)`. A partial uniqueness/application invariant permits at most one `PENDING` candidate per employee and round date across simultaneous offers. Persist every activated candidate, including automatically declined candidates, so the UI and audit never reconstruct participation from mutable balances. Index pending candidates by offer/tier and candidate history by employee/date.
+
+### 9.21 `post_allocation_booking`
+
+| Column | Type | Rules |
+|---|---|---|
+| `id` | `bigint` | PK |
+| `seat_occupancy_id` | `bigint` | FK, not null, unique |
+| `booking_type` | `varchar(24)` | `WAITLIST_CLAIM`, `OPEN_BOOKING`, or `ORIGINAL_REBOOKING` |
+| `offer_candidate_id` | `bigint` | nullable FK, unique; required only for waiting-list claim |
+| `required_tokens` | `integer` | not null, `> 0` |
+| `credit_tokens_spent` | `integer` | not null, `>= 0` |
+| `ordinary_tokens_spent` | `integer` | not null, `>= 0` |
+| `ordinary_participation_id` | `bigint` | nullable FK; required when ordinary spend is positive |
+| `created_at` | `timestamptz` | not null |
+
+Enforce `credit_tokens_spent + ordinary_tokens_spent = required_tokens`. Funding and occupancy commit atomically. A booking remains immutable after its occupancy is relinquished; the release is a separate event.
+
+### 9.22 `seat_offer_notification_dispatch` and delivery attempts
+
+Persist one logical dispatch at most per candidate, with candidate/employee IDs, status/counts, creation/completion timestamps, and a unique candidate key. Persist one attempt per dispatch/subscription with the same safe outcome/status semantics as bid-reminder attempts. Do not store endpoint/key/payload secrets. Candidate activation commits the logical intent; delivery is post-commit and cannot affect offer state.
+
+### 9.23 Panache mapping
+
+Use explicit entities/repositories for bids with periods, reservations, allocation units, individual assignments, capacity state, occupancy, relinquishments, credits, offers/candidates, bookings/funding, audit JSON/fingerprints, notification settings, subscriptions, suppressions, and both dispatch/attempt families. Do not expose entities as DTOs. Fetch published unit/member/current-occupancy projections and notification eligibility without N+1 queries. Round processing inserts units, members/results, original occupancy, capacity state, audit, and individual ledger effects atomically before completion; external notification delivery uses separate short transactions after business-state commit.
 
 ## 10. Liquibase
 
@@ -634,6 +827,8 @@ Use explicit entities/repositories for bids with periods, reservations, allocati
 - All changesets in the version 1.2 baseline are immutable for version 1.3. Use one or more new sequential change files to add `bid.attendance_period`, create/backfill `allocation_unit`, link/reshape individual results, and extend audit data. Existing bids become `FULL_DAY`; every existing assignment becomes a one-member `SINGLE` unit preserving outcome/order. Historical pairing audit is the canonical empty value, and any prior final random value is preserved as capacity-selection audit. Existing completed rounds, ledgers, fingerprints, and algorithm versions are never recalculated or labeled half-day-aware.
 - Apply the migration in safe stages: add nullable/defaulted structures, backfill and validate existing data, then enforce new constraints. Any legacy ranking/audit columns needed to explain deployed history may be retained read-only; new version 1.3 writes use the normalized allocation-unit model.
 - The half-day version 1.3 implementation and its migrations are already committed before this second version 1.3 feature. Do not rewrite those committed changesets for Web Push. Append one or more newly numbered version 1.3 change files for notification settings, subscriptions, suppressions, dispatches, and attempts. Existing employees default to reminders disabled with Monday as the effective start day; no subscription, suppression, or delivery rows are synthesized.
+- Version 1.4 MUST append one or more newly numbered change files after every version 1.3 changeset. Do not edit the deployed baseline, half-day, reservation, or Web Push changesets. Add post-allocation ordinary spend, the independent seat-offer preference, capacity/occupancy, relinquishment/credit, offer/candidate, booking/funding, notification-dispatch, ledger-reference, constraint, and index changes described in section 9.
+- Backfill current occupancy and capacity state from immutable successful `seat_assignment` rows only for completed round dates that have not ended when the migration runs; historical ended dates need no actionable occupancy. The backfill is deterministic and must not modify allocation units, assignments, bid spend, carry-over, or audit fingerprints. Existing employees default to seat-offer notifications disabled, and no relinquishment, credit, offer, booking, or seat-offer notification rows are synthesized.
 - `db/changelog/grant-permissions.yaml` contains the separate `set-permissions` changeset with `runAlways: true`. It runs after all versioned changes and executes `db/sql/grant-permissions.sql` as one PostgreSQL block with statement splitting disabled and comments retained. The SQL grants `SELECT`, `INSERT`, `UPDATE`, and `DELETE` on every non-Liquibase table in the `public` schema and `USAGE` on every sequence in that schema to the role supplied through the Liquibase `${applicationUser}` change-log parameter. The migrator must have authority to issue those grants.
 - The Quarkus Liquibase configuration MUST point to `db/changelog/db.changelog-master.yaml` and provide `applicationUser` from the configured application database username. Permission application therefore covers newly created tables and sequences on every migration run without mixing permission logic into individual versioned change files.
 - A separate idempotent application bootstrap mechanism creates the first bidding round; environment-specific employees and runtime round data MUST NOT be inserted by production changelogs.
@@ -770,6 +965,7 @@ All endpoints require authentication. State-changing requests require the CSRF c
 {
   "bidRemindersEnabled": true,
   "bidReminderStartWeekday": "WEDNESDAY",
+  "seatOfferNotificationsEnabled": true,
   "schedule": {
     "systemEnabled": true,
     "localTime": "10:00",
@@ -793,18 +989,19 @@ All endpoints require authentication. State-changing requests require the CSRF c
 }
 ```
 
-Only active devices are returned. `webPushApplicationServerKey` is the VAPID public key and is not secret. `schedule.systemEnabled` exposes only operational availability, not secrets; the UI clearly reports when reminder dispatch is disabled at deployment level. The backend does not claim that a listed remote device still has OS permission; the current browser combines this response with local feature detection, `Notification.permission`, and its current `PushManager` subscription. When no settings row exists, return disabled and `MONDAY`. `currentRound` is null when no open round exists.
+Only active devices are returned. `webPushApplicationServerKey` is the VAPID public key and is not secret. `schedule.systemEnabled` exposes only operational availability, not secrets; the UI clearly reports when reminder dispatch is disabled at deployment level. The backend does not claim that a listed remote device still has OS permission; the current browser combines this response with local feature detection, `Notification.permission`, and its current `PushManager` subscription. When no settings row exists, return both notification preferences disabled and `MONDAY`. `currentRound` is null when no open round exists.
 
 `PUT /api/settings/notifications
 
 ```json
 {
   "bidRemindersEnabled": true,
-  "bidReminderStartWeekday": "WEDNESDAY"
+  "bidReminderStartWeekday": "WEDNESDAY",
+  "seatOfferNotificationsEnabled": true
 }
 ```
 
-Both fields are required; the weekday is one of Monday through Friday. The operation atomically creates/replaces the employee preference and returns the authoritative settings representation. Disabling does not delete subscriptions or round suppressions. Enabling does not request browser permission or create a subscription.
+All three fields are required; the weekday is one of Monday through Friday. The operation atomically creates/replaces the employee preferences and returns the authoritative settings representation. The two enabled flags are independent. Disabling either type does not delete subscriptions or round suppressions. Enabling does not request browser permission or create a subscription.
 
 `POST /api/settings/notifications/devices
 
@@ -890,6 +1087,7 @@ Deletion returns `204 No Content`. It is allowed only while the reservation is m
   "serverTime": "2026-08-04T10:15:00Z",
   "seatCapacity": 12,
   "startingBalance": 70,
+  "postAllocationSpend": 0,
   "bidTotal": 20,
   "availableToBid": 50,
   "days": [
@@ -915,7 +1113,7 @@ Deletion returns `204 No Content`. It is allowed only while the reservation is m
 }
 ```
 
-The response contains all five dates. `attendancePeriod` is the saved value for a positive bid and `FULL_DAY` for a zero/no-bid draft. `seatCapacity` is physical capacity and each day satisfies `assignableSeatCapacity = seatCapacity - reservedSeatCount`; these reservation fields remain read-only. `availableToBid` is the employee's uncommitted token amount, not physical-seat availability or post-allocation balance, and attendance period never changes it. `serverTime` supports countdown display; `cutoffAt` is authoritative.
+The response contains all five dates. `attendancePeriod` is the saved value for a positive bid and `FULL_DAY` for a zero/no-bid draft. `seatCapacity` is physical capacity and each day satisfies `assignableSeatCapacity = seatCapacity - reservedSeatCount`; these reservation fields remain read-only. `availableToBid = startingBalance - postAllocationSpend - bidTotal` is the employee's uncommitted ordinary token amount, not physical-seat availability or relinquishment credit, and attendance period never changes it. `serverTime` supports countdown display; `cutoffAt` is authoritative.
 
 ### 11.7 Replace bids
 
@@ -935,7 +1133,7 @@ Semantics:
 
 - `roundId` prevents a stale page from writing into a successor round.
 - The array represents the complete replacement set; omitted/zero dates become no bid.
-- Each positive entry includes one valid attendance period. During rollout, omission is interpreted as `FULL_DAY`; unknown/null values from a version 1.3 client are rejected.
+- Each positive entry includes one valid attendance period. A legacy omission is interpreted as `FULL_DAY`; unknown/null values from a version 1.4 client are rejected.
 - On success return `200` with the same authoritative shape as `GET /api/bidding/current`.
 - Bidding endpoints never accept an email, employee ID, balance, allocation result, or token-spend decision from the client; the acting employee always comes from Quarkus `SecurityIdentity`.
 
@@ -943,22 +1141,33 @@ Semantics:
 
 `GET /api/assignments/latest`
 
+`GET /api/assignments/{roundId}` returns the same representation for the latest completed round or for a completed round with at least one target date whose end instant has not passed. It is not a general historical-browsing endpoint. This narrow lookup keeps the current Friday actionable after the next round is published and supports exact offer deep links. An ended non-latest round returns `404`.
+
 ```json
 {
   "roundId": 17,
   "status": "COMPLETED",
   "publishedAt": "2026-08-07T20:00:02Z",
   "seatCapacity": 12,
+  "myRelinquishmentCredits": {
+    "availableTokens": 20,
+    "expiresAt": "2026-08-14T22:00:00Z"
+  },
   "days": [{
     "date": "2026-08-10",
     "weekday": "MONDAY",
-    "myStatus": "ASSIGNED",
+    "targetDateEndAt": "2026-08-10T22:00:00Z",
+    "myStatus": "ACTIVE_ASSIGNMENT",
     "reservedSeatCount": 2,
     "assignableSeatCapacity": 10,
     "reservationDescription": "Customer workshop",
+    "originalOccupiedSeatCount": 10,
+    "originalAssignedEmployeeCount": 11,
+    "morningOccupiedCount": 9,
+    "afternoonOccupiedCount": 10,
     "occupiedSeatCount": 10,
-    "assignedEmployeeCount": 11,
-    "participants": [{
+    "activeEmployeeCount": 11,
+    "originalParticipants": [{
       "allocationUnitId": 901,
       "unitType": "HALF_DAY_PAIR",
       "unitRank": 4,
@@ -971,33 +1180,76 @@ Semantics:
       "assigned": true,
       "displayRank": 4,
       "isCurrentUser": true
-    }, {
-      "allocationUnitId": 901,
-      "unitType": "HALF_DAY_PAIR",
-      "unitRank": 4,
-      "unitScoreTokens": 30,
-      "employeeId": 84,
-      "firstName": "Sam",
+    }],
+    "currentOccupants": [{
+      "occupancyId": 2201,
+      "employeeId": 42,
+      "firstName": "Alex",
       "lastName": "Example",
-      "tokens": 10,
+      "attendancePeriod": "MORNING_ONLY",
+      "sourceType": "ORIGINAL_ASSIGNMENT",
+      "isCurrentUser": true
+    }],
+    "myRelinquishmentAction": {
+      "occupancyId": 2201,
+      "allowed": true,
+      "disabledReason": null
+    },
+    "myOfferHistory": [{
+      "offerId": 310,
+      "candidateId": 912,
       "attendancePeriod": "AFTERNOON_ONLY",
-      "assigned": true,
-      "displayRank": 5,
-      "isCurrentUser": false
+      "requiredTokens": 14,
+      "deadline": "2026-08-10T14:30:00Z",
+      "status": "AUTO_DECLINED_INSUFFICIENT_FUNDS",
+      "claimAllowed": false,
+      "declineAllowed": false,
+      "statusText": "Insufficient tokens"
+    }],
+    "openBookingOptions": [{
+      "attendancePeriod": "MORNING_ONLY",
+      "available": true,
+      "requiredTokens": 8,
+      "bookingAllowed": false,
+      "disabledReason": "ALREADY_OCCUPIES_DATE"
     }]
   }]
 }
 ```
 
-Top-level `seatCapacity` is physical capacity. `occupiedSeatCount` counts successful allocation units and never exceeds assignable capacity; `assignedEmployeeCount` counts successful individual bids and may be higher because a pair contains two employees. `myStatus` remains individual. Participants are ordered by unit rank and member order; pair members share unit ID/rank/score and are adjacent. Singles use `unitType: SINGLE`, and `unitScoreTokens` equals their individual tokens.
+Top-level `seatCapacity` is physical capacity. Original counts/participants expose the immutable Friday result; `originalParticipants` remain ordered by allocation-unit rank/member order and are never removed or reclassified. Current counts and `currentOccupants` expose active occupancy after later events. `occupiedSeatCount = max(morningOccupiedCount, afternoonOccupiedCount)` and `activeEmployeeCount` may exceed it. `targetDateEndAt` is authoritative for all actions.
 
-The API exposes the persisted unit grouping and combined score needed to explain pairing, but not optimiser/audit internals. For a globally resolved exact-score boundary group, successful units appear above the physical-seat boundary and unsuccessful units below it in immutable unit/member order.
+`myRelinquishmentCredits` aggregates the authenticated employee's unexpired credit for this published round and exposes its common end-of-week expiry; it is zero when none exists. Action representations are personalized and authoritative. They expose only the current employee's occupancy controls, offer history, prices, allowed flags, and safe disabled reasons. They never expose another employee's balance, affordability, notification preference, response, or offer history. The API exposes persisted unit grouping and combined scores needed to explain original pairing, but not optimiser/audit internals or detailed payment-source rows.
 
-### 11.9 Help
+### 11.9 Post-allocation actions
+
+All endpoints require authentication and CSRF protection, derive the employee from `SecurityIdentity`, and return the refreshed authoritative day projection on success. The path IDs are lookup/concurrency aids, never authorization. Every request rejects an ended target date, incompatible attendance, stale/foreign resource, insufficient current funding, or lost capacity race without side effects.
+
+`POST /api/assignments/{roundId}/dates/{date}/occupancies/{occupancyId}/relinquishment`
+
+Relinquishes the authenticated employee's active occupancy after server-side confirmation preconditions. Return `200` with refreshed state. A client must show the required confirmation before calling; the server never trusts a client claim that the occupancy is original or refundable.
+
+`POST /api/assignments/{roundId}/dates/{date}/offers/{offerId}/candidates/{candidateId}/claim`
+
+Claims a still-pending affordable compatible offer at the persisted original-bid price. A lost first-come race, expired/terminal candidate, changed capacity, or now-insufficient funding returns `409`. If funding has become insufficient since activation, atomically set the candidate to `AUTO_DECLINED_INSUFFICIENT_FUNDS`, progress the offer, and return refreshed conflict state.
+
+`POST /api/assignments/{roundId}/dates/{date}/offers/{offerId}/candidates/{candidateId}/decline`
+
+Records manual decline and progresses the offer atomically. Repeating a decline for the same already-declined candidate is idempotent and returns current state; other terminal outcomes return `409` with current state.
+
+`POST /api/assignments/{roundId}/dates/{date}/bookings`
+
+```json
+{"attendancePeriod": "AFTERNOON_ONLY"}
+```
+
+Creates an ordinary open booking or permitted original-relinquisher rebooking. The backend derives booking type, current capacity, fixed price, employee eligibility, credit-first funding, and ordinary participation. The request never supplies price, balance, source assignment, credit, or funding split. Return `201 Created` with refreshed state and a booking `Location`; a lost race or insufficient funds returns `409`.
+
+### 11.10 Help
 
 Help content SHOULD be bundled with Flutter for availability without another authenticated call. If centrally managed later, use `GET /api/public/help` with versioned/sanitized content.
 
-### 11.10 Error contract
+### 11.11 Error contract
 
 Use `application/problem+json`:
 
@@ -1018,11 +1270,11 @@ Status mapping:
 
 | Status | Use |
 |---|---|
-| `400` | malformed/invalid values, dates, duplicates, negatives, total over balance, invalid reservation date/count/description/range, invalid reminder weekday, push endpoint, key, expiry, or device label |
+| `400` | malformed/invalid values, dates, attendance period, duplicates, negatives, total over balance, invalid reservation date/count/description/range, invalid reminder weekday, push endpoint, key, expiry, or device label |
 | `401` | invalid credentials; missing, invalid, or expired Quarkus form-authentication cookie |
 | `403` | authenticated request lacks required CSRF proof or administrator authorization, or its origin is rejected |
-| `404` | no published/open resource, reservation, or employee-owned registered device when applicable |
-| `409` | stale round, cutoff passed, immutable/duplicate reservation, round processing, pessimistic lock timeout/concurrent update, push endpoint ownership conflict, or inapplicable reminder suppression |
+| `404` | no published/open resource, reservation, employee-owned occupancy/candidate, or employee-owned registered device when applicable |
+| `409` | stale round, cutoff/target date passed, immutable/duplicate reservation, round processing, pessimistic lock timeout/concurrent update, push endpoint ownership conflict, inapplicable reminder suppression, terminal/expired offer, incompatible or unavailable capacity, ineligible open booking, insufficient post-allocation funds, or lost first-come race |
 | `429` | authentication/code request, resend, verification, or login rate limit exceeded |
 | `500` | unexpected server failure, without sensitive details |
 | `503` | temporary database/service unavailability |
@@ -1061,7 +1313,8 @@ bidding/         bid queries, validation, replacement
 reservation/     admin authorization, dated reservation lifecycle, capacity calculation
 allocation/      half-day pairing, unit construction/ranking, global fairness, result mapping
 tokens/          participation balances and ledger
-notification/    preferences, device subscriptions, Web Push delivery, suppression, reminder scheduler
+occupancy/       post-allocation capacity, relinquishment, offers, claims, open booking
+notification/    preferences, device subscriptions, Web Push delivery, suppression, reminders, seat offers
 resource/        REST resource interfaces only
 resource/impl/   REST resource implementation classes
 dto/             REST request/response DTOs and problem representations
@@ -1083,9 +1336,9 @@ The `allocation/` package implements round-level allocation rather than independ
 
 The core optimiser and fairness logic MUST be pure domain logic without database access. It accepts an immutable canonical problem and returns a complete selected solution plus objective/audit data. The application may use bipartite matching, constrained search, integer optimisation, or another in-process technique appropriate to five target dates and the expected small employee population, but MUST demonstrably preserve the strict objective hierarchy. Do not add an external optimisation service, separate runtime, distributed component, or order-dependent greedy approximation.
 
-Domain services own transactions; resource implementations remain thin. Inject `Clock` and labeled random-selection abstractions for majority-boundary choice, equivalent pair composition, and final global solution. Tests control each choice independently. Production uses cryptographically secure randomness and persists every choice.
+Domain services own transactions; resource implementations remain thin. Inject `Clock` and labeled random-selection abstractions for majority-boundary choice, equivalent pair composition, and final global solution. Tests control each choice independently. Production uses cryptographically secure randomness and persists every choice. The occupancy service uses immutable value objects for morning/afternoon capacity vectors, prices, candidate tiers, and funding splits; it must not reuse the allocation optimiser or mutate completed allocation entities.
 
-The `notification/` package MUST use a maintained standards-based Java Web Push implementation supporting encrypted payloads and VAPID; do not implement Web Push encryption or signing primitives in application code. Separate eligibility selection, idempotent dispatch claiming, payload construction, vendor transport, response classification, subscription invalidation, and REST preference/device management so each is independently testable. Inject the push transport in tests. The reminder scheduled method coordinates the service and contains no REST or UI logic.
+The `notification/` package MUST use a maintained standards-based Java Web Push implementation supporting encrypted payloads and VAPID; do not implement Web Push encryption or signing primitives in application code. Separate eligibility selection, idempotent dispatch claiming, payload construction, vendor transport, response classification, subscription invalidation, and REST preference/device management so each is independently testable. Inject the push transport in tests. The reminder scheduled method coordinates the service and contains no REST or UI logic. Prompt seat-offer notification intents are event-driven after transaction commit and remain separate from scheduled bid-reminder dispatches while sharing subscription and transport infrastructure.
 
 ### 12.4 Validation
 
@@ -1148,7 +1401,7 @@ Quarkus MUST serve `index.html` as an SPA fallback for client routes while exclu
 
 ### 13.4 Seat assignments view
 
-This is the initial view. It shows exactly five collapsed cards for the latest completed round, sized to fit together on a typical viewport where practical.
+This is the initial view. It shows exactly five collapsed cards for one completed round, sized to fit together on a typical viewport where practical. Normally this is the latest completed round. If an immediately preceding completed round still contains the current, not-yet-ended business date after Friday's next round is published, the view keeps that round accessible as **Current week** and provides a clear switch to the **Upcoming week**. General historical browsing remains out of scope. Offer deep links select their exact still-actionable round/date.
 
 Each card displays localized weekday and `dd/MM` date (no year) and has these states:
 
@@ -1175,8 +1428,17 @@ Expanding a card displays:
 - a clear boundary after the last assigned bidder;
 - explicit assigned/not-assigned icon/text;
 - a highlight for the current employee.
+- immutable original-allocation results separately from current occupancy, with `Relinquished`, `Claimed later`, or `Booked later` labels where applicable;
+- current morning and afternoon occupancy/availability and the target-date action deadline;
+- the current employee's aggregate same-week relinquishment-credit balance and exact expiry when positive, clearly separated from ordinary bid balance;
+- an enabled **Relinquish assignment** action only for the current employee's active occupancy, followed by a confirmation explaining refund/credit behavior, possible reassignment, and lack of guaranteed recovery;
+- every waiting-list offer in which the current employee's tier was activated, retaining both **Claim seat** and **Decline** controls; both are enabled only for a pending affordable offer and remain disabled afterward with its persisted textual outcome;
+- a **Book available seat** action for an eligible no-bid employee, opening a confirmation dialog with full-day/morning/afternoon choices, disabling incompatible choices, and showing the server-provided price before confirmation;
+- the same booking action and dialog for an original releaser only when their original attendance period is openly available, labeled as rebooking and showing their original-bid price.
 
-Collapsed/expanded state is local UI state. Loading, empty/bootstrap, processing, authentication, and retryable error states require dedicated UI.
+The relinquishment confirmation states whether original-bid credit will be created and that a later booking receives no second refund if relinquished. A booking confirmation shows total price and, where useful without exposing sensitive internals, that expiring relinquishment credit is used before ordinary tokens. Client-side button state is advisory: every action refreshes after success or `409`, and a first-come race may be lost after the dialog opened.
+
+Collapsed/expanded state is local UI state. Loading, empty/bootstrap, processing, authentication, action-in-progress, stale/race conflict, and retryable error states require dedicated UI. Disabled offer controls remain keyboard/screen-reader discoverable with status text but cannot submit. Color alone never communicates original/current, pending/terminal, occupancy period, or action availability.
 
 ### 13.5 Place bids view
 
@@ -1186,7 +1448,7 @@ The view displays:
 - one accessible attendance badge/control per date, initially `Full day`, cycling independently through `Full day` → `Morning` → `Afternoon` → `Full day`; each state always combines a visible text label with a distinct semantic icon, while theme-derived background/foreground colors distinguish full-day from half-day attendance;
 - each date's read-only reserved-seat count and assignable capacity, with a clear badge/label when the reserved count is positive;
 - the public reservation description beneath the affected date when present;
-- authoritative starting balance, current bid total, and amount still available to bid;
+- authoritative starting balance, ordinary post-allocation spending already charged to this open round, current bid total, and amount still available to bid;
 - numeric token input with increment/decrement controls;
 - one auto-distribution selector per day;
 - **Auto-distribute** and **Save bids** actions;
@@ -1211,7 +1473,7 @@ Draft behavior:
 - Zero counts as empty and remains eligible for auto-distribution.
 - A positive field disables its auto-distribution selector.
 - Auto-distribution changes token amounts only and preserves every selected attendance period.
-- The UI explains that only successful bids are deducted and that all remaining tokens, including unsuccessful bids, are still subject to the carry-over cap.
+- The UI explains that only successful bids are deducted at allocation, that ordinary tokens already spent on current-week post-allocation bookings are no longer available, and that all remaining ordinary tokens, including unsuccessful bids, are still subject to the carry-over cap. Relinquishment credits are shown separately and never appear as bid balance.
 - The UI explains that reservations reduce the seats available for assignment but do not change the employee's token balance, bid limits, or bid price.
 - The UI explains that half-day bids cost the full individual amount, complementary bids may be paired into one higher-scoring unit, and unmatched half-day bids still participate individually.
 
@@ -1230,20 +1492,26 @@ On `409`, preserve the draft, refresh context, and explain whether cutoff or a c
 
 ### 13.6 Settings and Web Push enrollment
 
-The authenticated Settings page is available on desktop and mobile. Notification preferences are account-level and therefore display the same authoritative enabled state and start weekday everywhere.
+The authenticated Settings page is available on desktop and mobile. Notification preferences are account-level and therefore display the same authoritative enabled states and reminder start weekday everywhere.
 
-The page initially shows a **Bid reminders enabled** toggle, off by default. When off, reminder schedule, enrollment, and device controls are hidden. Switching it off updates the server preference but does not unsubscribe any device or remove the saved start weekday. Switching it on reveals:
+The page always shows **Bid reminders enabled** and **Seat availability offers**, both off by default. Switching bid reminders off updates only that preference and does not unsubscribe any device or remove the saved start weekday. When bid reminders are enabled, reveal:
 
 - a **Start reminders on** dropdown containing Monday through Friday, defaulting to Monday;
 - explanatory text that one reminder is sent at the application-wide time on the selected day and every following weekday until a positive bid is saved or the round is suppressed;
 - the configured local reminder time and shared business time zone as read-only information;
+- the reminder-specific completion and suppression explanation.
+
+When either notification preference is enabled, reveal the shared controls:
+
 - a current-device status and, when appropriate, **Enable notifications on this device**;
 - all active registered devices with best-effort labels, registration/last-seen dates, optional last vendor-accepted push date, and an individually confirmed **Remove device** action;
-- a warning when reminders are globally enabled but no active device is registered.
+- a warning when at least one preference is enabled but no active device is registered.
 
 If the deployment-level reminder scheduler is disabled, show a non-sensitive unavailable message and do not imply that reminders will be delivered; stored preferences and subscriptions remain visible/manageable according to the enabled-toggle rules.
 
-The global toggle MUST NOT itself subscribe a browser. **Enable notifications on this device** performs capability detection, and its direct tap/click initiates the browser permission request and `PushManager.subscribe` call. Only after permission and subscription succeed does the client register the result with the backend. Permission denial leaves the account preference intact, shows platform-appropriate instructions, and never repeatedly prompts automatically.
+Neither preference toggle subscribes a browser. **Enable notifications on this device** performs capability detection, and its direct tap/click initiates the browser permission request and `PushManager.subscribe` call. Only after permission and subscription succeed does the client register the result with the backend. Permission denial leaves the account preferences intact, shows platform-appropriate instructions, and never repeatedly prompts automatically.
+
+The **Seat availability offers** explanatory text states that notifications are sent only when the employee reaches an affordable waiting-list tier, that delivery is best effort, that offers remain first-come-first-served where tied, and that notification failure never extends the deadline. This preference is independent of **Bid reminders enabled**. Disabling both preferences hides shared enrollment/device controls without deleting subscriptions.
 
 Use feature detection for service workers, `PushManager`, and notification display rather than making browser names a security or capability decision. Platform/display-mode hints MAY tailor guidance:
 
@@ -1251,7 +1519,7 @@ Use feature detection for service workers, `PushManager`, and notification displ
 - On supported Android browsers, enrollment works through Web Push without a native application. PWA installation is recommended for the app-like experience but is not a backend requirement.
 - A desktop browser may configure the synchronized account preference without registering itself, or may register as another delivery device if it supports Web Push and the user explicitly chooses to do so.
 
-The current client reconciles its local `PushManager` subscription with the backend when Settings opens and after service-worker/subscription changes. It never displays another device as having verified OS permission. Removing a device prevents further server sends to it; globally disabling reminders merely pauses sends to all retained devices.
+The current client reconciles its local `PushManager` subscription with the backend when Settings opens and after service-worker/subscription changes. It never displays another device as having verified OS permission. Removing a device prevents further server sends to it; disabling a notification type merely pauses that type on all retained devices.
 
 The reminder deep link opens `/settings/reminders/skip` or the bidding page with the relevant round context. **Skip reminders this week** always shows a confirmation explaining that suppression lasts for the current bidding round, cannot be undone, and automatically clears by scope for the next round. The client posts the authoritative current `roundId`; stale, completed, or already-satisfied state is refreshed and explained rather than suppressed silently.
 
@@ -1285,8 +1553,12 @@ Help MUST explain:
 - assignment colors, today indicator, participant order, and capacity boundary;
 - half-day badges, grouped complementary pairs, individual versus combined tokens, and why assigned employee count may exceed occupied seats;
 - reserved seats reducing the number available for bidding, with reserved counts, assignable capacity, and public descriptions shown both while bidding and in published assignment cards;
-- surplus/unassigned seats being outside application control;
+- the difference between immutable original results and current occupancy after later changes;
+- relinquishing an original assignment, confirmation, non-carryable same-week credit, credit-first spending, expiry, and the absence of a second refund for relinquishing a later booking;
+- waiting-list ordering by original individual bids, exact-token first-come claiming, the shared original deadline, automatic insufficient-funds decline, disabled historical offer controls, and why notification delivery does not reserve capacity;
+- open full-day/morning/afternoon booking, fixed prices, no-bid eligibility, the original-relinquisher same-period/original-price exception, and end-of-target-date closure;
 - account-level bid-reminder preferences, the Monday–Friday start-day behavior, positive-bid stopping rule, per-device enrollment, multiple-device delivery, global disabling without unregistration, round-only suppression, and best-effort delivery;
+- the independent seat-offer notification preference and reuse of the same registered devices;
 - iPhone Home Screen installation/permission requirements, Android and desktop enrollment, notification/system-setting troubleshooting, and removal of a registered device.
 
 End-user help MUST NOT use implementation terminology such as bipartite matching, optimisation objectives, or lexicographic max-min fairness, and MUST NOT imply that each day's boundary tie is drawn independently.
@@ -1316,13 +1588,15 @@ When the PWA detects an Android browser, it MAY show **Get the Android app** in 
 
 ## 14. Web Push delivery
 
-Version 1.3 reminders use standards-based Web Push for installed iPhone/iPad Home Screen web apps, compatible Android browsers/PWAs, and compatible desktop browsers. They do not depend on the optional native Android application, local device alarms, an open browser tab, or a continuously running Flutter process.
+The current release uses standards-based Web Push for installed iPhone/iPad Home Screen web apps, compatible Android browsers/PWAs, and compatible desktop browsers. Bid reminders and seat-offer notifications do not depend on the optional native Android application, local device alarms, an open browser tab, or a continuously running Flutter process.
 
-The backend signs requests with configured VAPID credentials and encrypts each payload for the target subscription. Browser-vendor push services perform final delivery. Use conservative TTL/urgency/topic values appropriate to a same-day reminder; a later reminder for the same employee/round/date must not create duplicate logical content. Vendor responses are classified into accepted, temporary failure, and permanent failure. Permanent expiry/removal responses invalidate the subscription; redirects are not followed blindly.
+The backend signs requests with configured VAPID credentials and encrypts each payload for the target subscription. Browser-vendor push services perform final delivery. Use conservative TTL/urgency/topic values appropriate to each notification. A bid reminder uses same-day semantics; a seat offer's TTL MUST NOT extend beyond its persisted deadline and SHOULD use urgency appropriate to a time-sensitive first-come opportunity. Stable topics/logical IDs prevent duplicate content for the same reminder or candidate offer. Vendor responses are classified into accepted, temporary failure, and permanent failure. Permanent expiry/removal responses invalidate the subscription; redirects are not followed blindly.
 
 The initial user-visible template is title **Seat bidding reminder** and body **You have not placed your bids for next week yet.** Action labels are **Place bids** and **Skip reminders this week** where supported. Content is versioned in the payload so future clients can reject or safely fall back from unknown formats; it remains generic enough for lock-screen display.
 
-The optional native Android application has no device-local reminder requirement in version 1.3. If native push is added later, it should reuse the synchronized account preference, eligibility, suppression, and dispatch concepts through a platform-token adapter rather than introduce an independent reminder schedule. Android users can use the web application/PWA for the current Web Push feature.
+The seat-offer template uses title **Seat available** and a concise body naming the localized date and `Full day`, `Morning`, or `Afternoon`, with a safe **View offer** action/deep link. It may state that tied offers are first-come-first-served but never includes the bid, price, balance, competitor count/identity, or acceptance guarantee. Opening always refreshes authoritative state before enabling controls.
+
+The optional native Android application has no device-local notification requirement in version 1.4. If native push is added later, it should reuse synchronized preferences, eligibility, suppression/offer, and dispatch concepts through a platform-token adapter rather than introduce an independent schedule. Android users can use the web application/PWA for current Web Push features.
 
 ## 15. Deployment
 
@@ -1364,6 +1638,7 @@ seat-bidding:
   tokens-per-round: 60
   carry-over-cap: 24
   seat-capacity: ${SEAT_CAPACITY}
+  minimum-open-booking-price: ${MINIMUM_OPEN_BOOKING_PRICE:1}
   time-zone: "${SEAT_BIDDING_TIME_ZONE:Europe/Berlin}"
   scheduler:
     cron: "${SEAT_ASSIGNMENT_CRON:0 0 22 ? * FRI}"
@@ -1460,7 +1735,7 @@ OpenTelemetry MUST be configured as the common observability mechanism for loggi
 
 File logging MUST use the configuration shown above. It is disabled unless `LOG_TO_FILE=true`, writes to `/logs/application.log`, uses the specified format, and does not rotate merely because the application starts. The container deployment MUST mount a writable volume at `/logs` whenever file logging is enabled. Console logging remains available for normal container operation.
 
-The allocation and reminder `@Scheduled` methods both use `timeZone = "${seat-bidding.time-zone}"`; there are no schedule-specific time-zone properties. Their `cron` attributes reference their respective configured expressions. Both cron expressions, the shared `ZoneId`, feature flags, and reminder transport durations MUST be validated at startup. The default reminder cron fires exactly once at 10:00 Monday through Friday; no minute-based polling or catch-up scheduler is permitted.
+The allocation and reminder `@Scheduled` methods both use `timeZone = "${seat-bidding.time-zone}"`; there are no schedule-specific time-zone properties. Their `cron` attributes reference their respective configured expressions. Both cron expressions, the shared `ZoneId`, feature flags, reminder transport durations, and positive minimum open-booking price MUST be validated at startup. The default reminder cron fires exactly once at 10:00 Monday through Friday; no minute-based polling or catch-up scheduler is permitted.
 
 Authentication durations, limits, password blocklist, Argon2id parameters, allowed web origins, Quarkus form-authentication settings, mail settings, Web Push endpoint limits, and VAPID key/subject compatibility MUST be validated at startup. Secrets such as the activation-code pepper, form-session encryption key, CSRF signature key, VAPID private key, subscription material, SMTP password, and password hashes must never be exposed through the public configuration endpoint. The authenticated notification-settings response may expose only the VAPID public key. `application-test.yaml` MUST use Quarkus `MockMailbox`, an injected fake Web Push transport, and MUST NOT contact a real SMTP or push service. The Android download URL may be exposed through the public configuration endpoint.
 
@@ -1491,6 +1766,12 @@ All backend tests and static-analysis/build jobs MUST execute with JDK 25 so loc
 - Password-policy length boundaries, Unicode handling, absence of composition rules, matching confirmation, and common/compromised-password blocklist.
 - Custom Argon2id identity-provider success/failure, PHC parsing, parameter-upgrade detection, and generic invalid-credential behavior.
 - `USER`/`ADMIN` role construction and current database revalidation for admin operations.
+- Morning/afternoon capacity-vector derivation from full-day, paired half-day, unmatched half-day, relinquished, and later-booked occupancy.
+- Target-date end instants across ordinary days and DST, plus `min(releasedAt + 24h, targetDateEndAt)` offer deadlines and no deadline reset during tier progression.
+- Original-assignment-only credit creation, credit-first funding, mixed funding, no second refund, same-week expiry, and exclusion from carry-over.
+- Open-booking comparison prices for all three attendance periods, empty-comparison fallback, original-relinquisher same-period/original-price behavior, and exclusion of original unsuccessful bidders.
+- Compatible waiting-list ordering by original individual bids, exact-token tiers, multiple available slots, unaffordable automatic decline, manual decline, tied first-come winner, tier progression, deadline expiry, and retained terminal candidate history.
+- Independent bid-reminder and seat-offer notification preferences; no seat-offer intent for unaffordable candidates and one logical intent per affordable activated candidate.
 
 #### Allocation optimiser test matrix
 
@@ -1528,7 +1809,7 @@ O. **Input-order independence:** permute bids, employees, target dates, insertio
 
 P. **No boundary ties:** deterministic ranking alone produces all results and the optimiser/random selector is not invoked unnecessarily. A round-level audit record is still persisted with a null random value.
 
-Q. **Surplus capacity:** when bidders are fewer than seats, every bidder wins, surplus seats remain unassigned, and the fairness mechanism invents neither candidates nor assignments.
+Q. **Surplus capacity:** when bidders are fewer than seats, every bidder wins and the original allocation leaves surplus capacity unassigned; the fairness mechanism invents neither candidates nor assignments, while version 1.4 subsequently exposes compatible surplus capacity for open booking.
 
 R. **Reservation reduces capacity before ranking:** with physical capacity 4 and one seat reserved, allocation behaves exactly as capacity 3 while the reservation itself creates no bidder, assignment, or token entry.
 
@@ -1588,6 +1869,14 @@ AF. **Input-order independence:** permuting half-day bids and equal-token candid
 - `quarkus-rest-csrf` creates and signs the CSRF cookie and rejects missing, mismatched, malformed, and unsigned tokens on Jakarta REST JSON state-changing requests for both platforms; separate tests verify allowed-origin enforcement on `/j_security_check`.
 - Authentication `401`/`403`/`429` behavior and `Retry-After` where applicable.
 - Notification preference and device mutations are employee-scoped, CSRF-protected, and safe under concurrent registration/removal.
+- The version 1.4 migration preserves every version 1.3 allocation/audit/ledger row, backfills only still-actionable successful occupancy and capacity state, adds disabled seat-offer preferences, and synthesizes no releases, credits, offers, bookings, or dispatches.
+- Relinquishment and original-credit creation commit atomically and exactly once; later-booking relinquishment releases capacity without another credit.
+- Concurrent compatible claims/open bookings serialize on the date capacity row: capacity never becomes negative or exceeds assignable limits, exactly the available number succeeds, and losing requests spend nothing.
+- Concurrent bid replacement and post-allocation spending serialize on participation; `current bid total + ordinary post-allocation spend <= starting balance` always holds.
+- Credit rows are consumed in expiry/ID order before ordinary balance, funding ledger entries reconcile to booking price, and expiry cannot race into negative or double-consumed credit.
+- Offer activation/progression is idempotent across retries, records unaffordable candidates as terminal without dispatch, preserves the original deadline, and sends at most one logical intent per affordable candidate/offer.
+- Reading or acting after the target-date end instant lazily materializes expiry and rejects mutation even if housekeeping never ran.
+- Relinquishment, waiting-list, and open-booking mutations cannot modify original units, assignments, ranks, bid spend, carry-over, or allocation audit fingerprints.
 - Reminder suppression is idempotent, immutable, round-scoped, rejects stale/non-open rounds, and cannot be bypassed by toggling the global preference.
 - The normal Quarkus reminder schedule fires from its configured cron in the shared zone, skips concurrent execution, creates one dispatch per eligible employee/date, sends to every snapshotted active subscription, isolates failures, and performs no polling/catch-up execution.
 - Push transport tests use a local fake/injected transport, never Apple, Google, Mozilla, or another real vendor. Accepted, temporary-failure, permanent-failure, timeout, malformed response, and invalidation paths reconcile dispatch/attempt rows.
@@ -1604,6 +1893,9 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 - Bidding context and successful bid-replacement responses expose physical, reserved, and assignable capacities plus the optional public reservation description for every open-round date without exposing other employees' bids.
 - Bidding requests/responses enforce and round-trip attendance periods, including rollout omission as full day and invalid enum rejection.
 - Published assignments expose occupied seats, assigned employees, unit ID/type/rank/score, individual tokens/period/display rank, pair adjacency, and reservation capacities/description.
+- Published assignments separately expose immutable original results, current period occupancy, current occupants, target-date end instant, personalized relinquishment action, complete personal offer history, and eligible open-booking options/prices without exposing another employee's candidate or funding state.
+- Post-allocation endpoints derive identity, price, capacity, credit, and funding server-side; ownership, CSRF, date, period, affordability, first-come conflict, terminal offer, and no-bid/original-relinquisher eligibility contracts are enforced.
+- Notification settings independently round-trip `seatOfferNotificationsEnabled`; seat-offer dispatch contracts disclose no bid, balance, competitor, endpoint, or key material.
 - Problem details and all status mappings.
 - Stale `roundId`, dates outside round, duplicate dates, negative/fractional/overspent bids.
 - No employee identifier is accepted or honored.
@@ -1622,6 +1914,11 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 - Reminder deep-link/widget tests cover positive-bid completion, all-zero behavior, confirmed immutable current-round suppression, stale/already-satisfied state, and the absence of an undo action.
 - Desktop PWA tests show the third admin destination and reservation CRUD UI only for admins at the wide breakpoint; compact web and Android never expose the controls or route.
 - Assignment widgets group pair members, show morning/afternoon badges only for half-day bids, suppress full-day badges, distinguish occupied seats from employee count, and preserve persisted unit/member order.
+- Assignment widgets distinguish immutable original results from current occupancy; show period-specific capacity, later-occupancy labels, deadline, and refreshed action state; and preserve an original participant after relinquishment.
+- Relinquishment confirmation covers irreversibility, credit/expiry, reassignment, and no second refund for later bookings. Claim/decline controls remain visible and disabled with every terminal outcome, including automatic insufficient funds and another tied claimant winning.
+- Open-booking dialogs offer only compatible full-day/morning/afternoon choices, display the authoritative fixed/original price, confirm before spending, handle a lost `409` race without optimistic occupancy, and remain usable through the target date.
+- Settings tests cover two independent notification toggles, shared device enrollment visibility when either is enabled, retained subscriptions when both are disabled, and seat-offer explanatory text.
+- Seat-offer deep-link/service-worker tests open the relevant assignment card but never mutate from a notification action.
 - End-to-end flow: login, load bids, edit/save, cutoff simulation, published result.
 
 ### 17.5 Acceptance scenarios
@@ -1667,6 +1964,20 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 39. If the application is unavailable at the configured 10:00 trigger, no polling or later catch-up reminder is generated for that business date.
 40. Both the Friday allocation job and weekday reminder job use the single configured `Europe/Berlin` zone, remain at their intended local times across DST changes, and never use a client, JVM, or database default zone for business weekday decisions.
 41. Adding the notification feature after the committed half-day implementation appends new version 1.3 changesets without modifying the committed half-day changesets or any version 1.2 deployed changeset.
+42. Alice relinquishes her original 20-token full-day assignment. Her immutable original result and debit remain, current occupancy releases one morning and one afternoon slot, and exactly one 20-token same-week credit is created. The UI retains Alice in original results as `Relinquished`.
+43. The highest compatible unsuccessful tier contains Bob and Carol at 15 tokens. Both can afford the claim, both become pending, and both receive a notification only if independently opted in. With one compatible slot, the first committed claim pays 15 and succeeds; the other becomes `CLAIMED_BY_OTHER`, spends nothing, and retains disabled Claim/Decline controls.
+44. Bob reaches an offer tier but cannot fund his original bid at activation. He becomes `AUTO_DECLINED_INSUFFICIENT_FUNDS`, receives no push, reserves no capacity, and both controls are disabled with an insufficient-token explanation. Later balance changes do not reconsider him for that offer, and the next tier activates immediately.
+45. Every affordable candidate in one tier manually declines. Their disabled controls remain visible, the next lower original-individual-bid tier activates without a new deadline, and only newly pending opted-in candidates receive notifications.
+46. A relinquishment at 15:00 has a nominal next-day 15:00 deadline, but its target date ends at local midnight; the offer therefore ends at midnight. Unclaimed capacity becomes openly bookable when the earlier deadline is reached and no mutation succeeds afterward.
+47. With assignable capacity 2, one full-day occupant and one morning-only occupant produce morning occupancy 2 and afternoon occupancy 1. A no-bid employee may book afternoon only, but morning and full day are unavailable. The original unmatched half-day unit/result remains unchanged.
+48. Open morning booking uses the lowest original individual bid among successful full-day/morning occupants; afternoon uses successful full-day/afternoon occupants; full day uses the lowest successful original unit score. When the applicable comparison set is empty, price is the round's snapshotted minimum. Fully reserved capacity never exposes a booking regardless of fallback price.
+49. An employee who did not bid books openly during the target day and pays the complete displayed price. An originally unsuccessful bidder cannot use open booking for that date after declining, automatic decline, losing a tied race, or offer expiry.
+50. Alice relinquished an original 40-token morning assignment. Once its offer ends with morning capacity still open, only Alice's original morning period is available to her as a rebooking exception and costs exactly 40 even when the ordinary morning price is lower. Releasing that rebooking creates no second credit.
+51. An employee has 20 unexpired relinquishment-credit tokens and 10 uncommitted ordinary tokens after current bids. A 25-token booking consumes all 20 credit tokens and 5 ordinary tokens atomically, leaving 5 ordinary tokens available for current-round bidding. Unused credit expires after the published round's Friday end and contributes nothing to carry-over.
+52. Two requests race for one afternoon slot. The date-capacity lock allows exactly one booking and one payment; the loser receives refreshed `409` state, and no counter, credit, participation, ledger, or occupancy is partially changed.
+53. A candidate enables seat-offer notifications but disables bid reminders. Registered devices receive prompt affordable seat offers but no scheduled bid reminders. Reversing the preferences reverses that behavior without re-registering devices.
+54. Deploying version 1.4 over version 1.3 appends new changesets, preserves all original allocation and notification data, backfills actionable occupancy deterministically, defaults the new preference to disabled, and creates no synthetic post-allocation business events.
+55. At Friday 22:00 the next round is published while the current Friday remains actionable until midnight. The assignment UI can still open the preceding round as **Current week**, exact offer links continue to work, and the newly published round is available as **Upcoming week**; the preceding round becomes unavailable for mutation at midnight.
 
 ## 18. Observability and operations
 
@@ -1678,6 +1989,8 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 - Admin reservation metrics SHOULD cover aggregate create/delete success, validation/authorization failure, and conflicts. Structured audit logs record reservation ID, target date, count, acting employee ID, and outcome, but not the public description.
 - Reminder metrics SHOULD cover scheduler execution status/duration, eligible employees, logical dispatches, attempted subscriptions, vendor-accepted sends, temporary/permanent failures, invalidated subscriptions, suppression creation, and preference/device mutations. Do not use employee IDs, device labels, endpoints, keys, round-specific eligibility sets, or vendor capability tokens as metric labels.
 - Reminder structured logs may include internal dispatch/round/subscription IDs, business date, classified outcome, safe provider status, and trace ID. They MUST NOT contain endpoint URLs, encryption/auth keys, VAPID private material, payload ciphertext, notification content beyond a stable template identifier, or user-agent strings.
+- Post-allocation metrics SHOULD cover aggregate relinquishments, credits created/consumed/expired, offer tiers activated, candidate terminal outcomes, claims, open bookings by attendance period, first-come conflicts, and seat-offer delivery outcomes. Employee IDs, bid/price values, balances, candidate sets, and dates MUST NOT be metric labels.
+- Post-allocation structured logs may include internal round/date/occupancy/offer/candidate/booking IDs, operation, classified outcome, and trace ID, but never employee names/emails, token balances, complete waiting lists, push endpoints, or detailed funding values.
 - OpenTelemetry traces SHOULD cover inbound REST requests, database operations, scheduled round processing, and scheduled reminder dispatch, with custom spans around deterministic classification, global optimisation, final selection, persistence, accounting, eligibility selection, and aggregate push transport where they materially improve diagnosis. Do not record bids, candidate identities, subscription material, random values, or complete solutions as span attributes.
 - Alert when a due round is not completed, no open successor exists, the reminder job fails, push permanent/temporary failure rates exceed an operational threshold, Liquibase fails, or ledger reconciliation fails.
 - Document a manual operational retry that calls the same idempotent processing service; do not repair results with ad hoc duplicate inserts.
@@ -1695,7 +2008,9 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 8. Build Flutter authentication, attendance-aware bidding, grouped assignments, desktop admin reservations, help, and responsive navigation.
 9. Append the second version 1.3 migration and implement notification preferences, subscription lifecycle, round suppression, idempotent dispatch persistence, maintained Web Push transport, and the once-per-trigger Quarkus reminder scheduler without altering the committed half-day changes.
 10. Add the cross-platform Settings page, capability/permission enrollment, service-worker push/click behavior, safe reminder deep links/confirmation, help, and platform-specific iOS/Android guidance.
-11. Complete integration, migration, authorization, SSRF, concurrency, accessibility, service-worker, container, and end-to-end verification.
+11. Append version 1.4 migrations and implement period-capacity projection/locking, original occupancy creation/backfill, relinquishment credits, released-capacity offers/candidates, credit-first post-allocation payment, open booking, and prompt seat-offer delivery without modifying original allocation logic.
+12. Extend published-assignment resources and Flutter cards/settings/help with original-versus-current occupancy, personalized action/history controls, booking dialogs, independent notification preference, and conflict refresh.
+13. Complete integration, migration, authorization, SSRF, concurrency, accessibility, service-worker, container, and end-to-end verification.
 
 ## 20. Future extensions
 
@@ -1708,6 +2023,7 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 - Password change, forgotten-password recovery, operator-assisted reset UI, and self-service session management.
 - Additional notification types, per-user reminder times or individual weekdays, weekend reminders, email/SMS fallback, notification localization, editable device names, and administrator notification controls.
 - Native Android push-token delivery integrated with the shared reminder preferences and suppression model.
+- Administrator cancellation or forced reassignment of active employee occupancy, named-desk selection, transferable bookings, and direct employee-to-employee handoff.
 - Kubernetes StatefulSet deployment with ordinal-zero scheduler activation.
 - Historical browsing, analytics, exports, and privacy/retention controls beyond the latest published round.
 - Localization beyond the initial language and date convention.
@@ -1715,7 +2031,7 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 
 ## 21. Definition of done
 
-Version 1.3 is complete when all mandatory rules in this document are implemented, the backend builds/tests/runs on Java 25, Liquibase provisions an empty PostgreSQL database and safely upgrades version 1.2 data, security and concurrency requirements pass against PostgreSQL, the PWA is served from the Jib-built Quarkus image, bid privacy is verified, and the responsive PWA supports the complete workflow without requiring the optional Android app.
+Version 1.4 is complete when all mandatory rules in this document are implemented, the backend builds/tests/runs on Java 25, Liquibase provisions an empty PostgreSQL database and safely upgrades version 1.3 data without rewriting deployed changesets, security and concurrency requirements pass against PostgreSQL, the PWA is served from the Jib-built Quarkus image, bid/privacy boundaries are verified, and the responsive PWA supports the complete workflow without requiring the optional Android app.
 
 Allocation completion requires individual token authority during pairing selection; opposite-order complementary pairing; eligible unmatched half-day singles; indivisible pair units scored by bid sum; unit-score capacity ranking; global fairness over canonical single/pair identities; maximum utilisation, distinct winners, and lexicographic max-min distribution; randomness only among token-equivalent pairing choices or globally equivalent solutions; order independence; stable persisted units/member results/audit; and individual successful-bid-only accounting.
 
@@ -1724,3 +2040,5 @@ The administration extension is complete when `is_admin` is manually maintainabl
 The half-day extension is complete when independent accessible three-state controls round-trip through the API; their persistent labels, semantic icons, theme-derived full-day/half-day colors, stable sizing, focus, tooltip, contrast, animation, and screen-reader behavior satisfy section 13; deployed data migrates to full-day single units without historical changes; pairing, unit ranking, fairness, persistence, display, and charging satisfy sections 5–9; paired members are grouped with badges and individual bids; occupied seats are distinguished from assigned employees; and every half-day, integration, contract, Flutter, migration, and acceptance test in section 17 passes.
 
 The Web Push extension is complete when notification preferences are disabled by default and synchronize across clients; Monday–Friday start-day behavior, positive-bid completion, immutable round suppression, retained global-disable subscriptions, and multi-device delivery satisfy sections 5–14; the normal Quarkus job runs once per configured trigger in the shared business zone without polling/catch-up; subscription secrets and outbound endpoints are secured; iOS Home Screen, Android web, desktop, permission, service-worker, action/fallback, and safe deep-link flows work as specified; new changesets append after rather than modify the committed half-day work; fake-transport PostgreSQL tests cover dispatch idempotency and failure isolation; and all notification acceptance scenarios in section 17 pass.
+
+The version 1.4 post-allocation extension is complete when original allocation/audit/accounting remain immutable; period capacity and active occupancy reconcile; original assignments and later bookings can be relinquished with exactly the specified credit behavior; waiting-list offers preserve original individual-bid tiers, affordability snapshots, deadlines, first-come concurrency, persisted terminal controls, and prompt opt-in notifications; compatible open booking applies fixed/fallback/original-rebook prices and eligibility rules; credit-first mixed funding and ordinary open-round spending reconcile without exceeding bid budgets or leaking into carry-over; all target-date-end, migration, API, UI, security, notification, race, ledger, and acceptance tests in section 17 pass; and no result depends on notification delivery or housekeeping timing.
