@@ -182,6 +182,7 @@ class AssignmentParticipant {
         required this.assigned,
         required this.displayRank,
         required this.isCurrentUser,
+        this.seatNumber,
     });
     final int allocationUnitId;
     final AllocationUnitType unitType;
@@ -195,6 +196,7 @@ class AssignmentParticipant {
     final bool assigned;
     final int displayRank;
     final bool isCurrentUser;
+    final int? seatNumber;
     String get displayName => [
         firstName,
         lastName,
@@ -215,7 +217,128 @@ class AssignmentParticipant {
                 assigned: json['assigned'] as bool,
                 displayRank: json['displayRank'] as int,
                 isCurrentUser: json['isCurrentUser'] as bool,
+                seatNumber: json['seatNumber'] as int?,
             );
+}
+
+class FloorPlanViewBox {
+    const FloorPlanViewBox({required this.minX, required this.minY, required this.width, required this.height});
+    final double minX;
+    final double minY;
+    final double width;
+    final double height;
+    factory FloorPlanViewBox.fromJson(Map<String, dynamic> json) => FloorPlanViewBox(
+        minX: (json['minX'] as num).toDouble(),
+        minY: (json['minY'] as num).toDouble(),
+        width: (json['width'] as num).toDouble(),
+        height: (json['height'] as num).toDouble(),
+    );
+}
+
+class FloorPlanSeat {
+    const FloorPlanSeat({required this.id, required this.number, required this.x, required this.y, required this.stars});
+    final int id;
+    final int number;
+    final double x;
+    final double y;
+    final int stars;
+    FloorPlanSeat copyWith({int? stars}) => FloorPlanSeat(
+        id: id, number: number, x: x, y: y, stars: stars ?? this.stars,
+    );
+    factory FloorPlanSeat.fromJson(Map<String, dynamic> json) => FloorPlanSeat(
+        id: json['id'] as int,
+        number: json['number'] as int,
+        x: (json['normalizedX'] as num).toDouble(),
+        y: (json['normalizedY'] as num).toDouble(),
+        stars: json['stars'] as int? ?? 0,
+    );
+}
+
+class FloorPlan {
+    const FloorPlan({required this.roundId, required this.versionId, required this.svgUrl,
+        required this.viewBox, required this.cutoffAt, required this.serverTime,
+        required this.preferenceRevision, required this.effectiveForCurrentRound, required this.seats});
+    final int roundId;
+    final int versionId;
+    final String svgUrl;
+    final FloorPlanViewBox viewBox;
+    final DateTime cutoffAt;
+    final DateTime serverTime;
+    final int preferenceRevision;
+    final bool effectiveForCurrentRound;
+    final List<FloorPlanSeat> seats;
+    factory FloorPlan.fromJson(Map<String, dynamic> json) => FloorPlan(
+        roundId: json['roundId'] as int,
+        versionId: json['floorPlanVersionId'] as int,
+        svgUrl: json['svgUrl'] as String,
+        viewBox: FloorPlanViewBox.fromJson(json['viewBox'] as Map<String, dynamic>),
+        cutoffAt: DateTime.parse(json['cutoffAt'] as String),
+        serverTime: DateTime.parse(json['serverTime'] as String),
+        preferenceRevision: json['preferenceRevision'] as int? ?? 0,
+        effectiveForCurrentRound: json['effectiveForCurrentRound'] as bool? ?? true,
+        seats: (json['seats'] as List).map((value) =>
+            FloorPlanSeat.fromJson(value as Map<String, dynamic>)).toList(),
+    );
+}
+
+class AdminFloorPlanSeat {
+    const AdminFloorPlanSeat({required this.id, required this.number, required this.x, required this.y,
+        required this.inherited, required this.state});
+    final int id;
+    final int number;
+    final double x;
+    final double y;
+    final bool inherited;
+    final String state;
+    factory AdminFloorPlanSeat.fromJson(Map<String, dynamic> json) => AdminFloorPlanSeat(
+        id: json['id'] as int, number: json['number'] as int,
+        x: (json['normalizedX'] as num).toDouble(), y: (json['normalizedY'] as num).toDouble(),
+        inherited: json['inherited'] as bool, state: json['state'] as String,
+    );
+}
+
+class AdminFloorPlanVersion {
+    const AdminFloorPlanVersion({required this.id, required this.versionNumber, required this.status,
+        required this.draftRevision, required this.svgUrl, required this.viewBox, required this.seats});
+    final int id;
+    final int versionNumber;
+    final String status;
+    final int draftRevision;
+    final String svgUrl;
+    final FloorPlanViewBox viewBox;
+    final List<AdminFloorPlanSeat> seats;
+    factory AdminFloorPlanVersion.fromJson(Map<String, dynamic> json) => AdminFloorPlanVersion(
+        id: json['id'] as int, versionNumber: json['versionNumber'] as int,
+        status: json['status'] as String, draftRevision: json['draftRevision'] as int,
+        svgUrl: json['svgUrl'] as String,
+        viewBox: FloorPlanViewBox.fromJson(json['viewBox'] as Map<String, dynamic>),
+        seats: (json['seats'] as List).map((value) =>
+            AdminFloorPlanSeat.fromJson(value as Map<String, dynamic>)).toList(),
+    );
+}
+
+class AdminFloorPlan {
+    const AdminFloorPlan({required this.stateRevision, required this.watermark, required this.pendingDeactivation,
+        this.activeVersion, this.pendingVersion, this.draft, this.warnings = const []});
+    final int stateRevision;
+    final int watermark;
+    final bool pendingDeactivation;
+    final AdminFloorPlanVersion? activeVersion;
+    final AdminFloorPlanVersion? pendingVersion;
+    final AdminFloorPlanVersion? draft;
+    final List<String> warnings;
+    factory AdminFloorPlan.fromJson(Map<String, dynamic> json) => AdminFloorPlan(
+        stateRevision: json['stateRevision'] as int,
+        watermark: json['permanentNumberWatermark'] as int,
+        pendingDeactivation: json['pendingDeactivation'] as bool,
+        activeVersion: json['activeVersion'] == null ? null :
+            AdminFloorPlanVersion.fromJson(json['activeVersion'] as Map<String, dynamic>),
+        pendingVersion: json['pendingVersion'] == null ? null :
+            AdminFloorPlanVersion.fromJson(json['pendingVersion'] as Map<String, dynamic>),
+        draft: json['draft'] == null ? null :
+            AdminFloorPlanVersion.fromJson(json['draft'] as Map<String, dynamic>),
+        warnings: (json['warnings'] as List? ?? const []).cast<String>(),
+    );
 }
 
 class AssignmentDay {
@@ -323,15 +446,21 @@ class Assignments {
         required this.publishedAt,
         required this.seatCapacity,
         required this.days,
+        this.capacitySource = 'CONFIGURATION',
+        this.floorPlanVersionId,
     });
     final int roundId;
     final DateTime publishedAt;
     final int seatCapacity;
     final List<AssignmentDay> days;
+    final String capacitySource;
+    final int? floorPlanVersionId;
     factory Assignments.fromJson(Map<String, dynamic> json) => Assignments(
         roundId: json['roundId'] as int,
         publishedAt: DateTime.parse(json['publishedAt'] as String),
         seatCapacity: json['seatCapacity'] as int,
+        capacitySource: json['capacitySource'] as String? ?? 'CONFIGURATION',
+        floorPlanVersionId: json['floorPlanVersionId'] as int?,
         days: (json['days'] as List)
                 .map((value) => AssignmentDay.fromJson(value as Map<String, dynamic>))
                 .toList(),

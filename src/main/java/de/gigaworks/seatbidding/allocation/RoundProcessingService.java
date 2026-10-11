@@ -17,6 +17,10 @@ import de.gigaworks.seatbidding.persistence.SeatAssignmentRepository;
 import de.gigaworks.seatbidding.persistence.SeatReservationRepository;
 import de.gigaworks.seatbidding.persistence.TokenLedgerEntity;
 import de.gigaworks.seatbidding.persistence.TokenLedgerRepository;
+import de.gigaworks.seatbidding.persistence.EmployeeSeatPreferenceRepository;
+import de.gigaworks.seatbidding.persistence.EmployeeSeatPreferenceRevisionRepository;
+import de.gigaworks.seatbidding.persistence.FloorPlanVersionSeatRepository;
+import de.gigaworks.seatbidding.persistence.PhysicalSeatEntity;
 import de.gigaworks.seatbidding.round.RoundFactory;
 import de.gigaworks.seatbidding.tokens.BalanceCalculator;
 
@@ -67,6 +71,18 @@ public class RoundProcessingService {
     RoundFactory roundFactory;
 
     @Inject
+    FloorPlanVersionSeatRepository floorPlanSeats;
+
+    @Inject
+    EmployeeSeatPreferenceRevisionRepository preferenceRevisions;
+
+    @Inject
+    EmployeeSeatPreferenceRepository preferences;
+
+    @Inject
+    SeatPlacementOptimizer seatPlacementOptimizer;
+
+    @Inject
     Clock clock;
 
     @Transactional
@@ -102,6 +118,8 @@ public class RoundProcessingService {
                 roundBids.stream().map(bid -> new RoundAllocation.Bid(bid.roundDate.id, bid.roundDate.targetDate,
                         bid.id, bid.participation.employee.id, bid.tokens, bid.attendancePeriod)).toList());
 
+        var placement = placeSeats(round, solution);
+
         for (var result : solution.results()) {
             var unit = new AllocationUnitEntity();
             unit.roundDate = datesById.get(result.dateId());
@@ -113,6 +131,7 @@ public class RoundProcessingService {
             unit.finalRank = result.finalRank();
             unit.resolution = result.resolution();
             unit.boundaryTieGroup = result.boundaryTieGroup();
+            unit.physicalSeat = placement.byUnit().get(result.dateId() + "|" + result.fairnessIdentity());
             allocationUnits.persist(unit);
             for (var member : result.members()) {
                 var assignment = new SeatAssignmentEntity();
@@ -130,11 +149,12 @@ public class RoundProcessingService {
                 assignment.boundaryTieGroup = result.boundaryTieGroup();
                 assignment.tieGroup = null;
                 assignment.drawValue = null;
-                assignment.algorithmVersion = result.algorithmVersion();
+                assignment.algorithmVersion = round.floorPlanVersion == null ? result.algorithmVersion()
+                        : "v5-floor-plan";
                 assignments.persist(assignment);
             }
         }
-        persistAudit(round, solution);
+        persistAudit(round, solution, placement);
         assignments.flush();
 
         var spendByParticipation = new HashMap<Long, Integer>();
@@ -165,17 +185,80 @@ public class RoundProcessingService {
     }
 
     private void persistAudit(de.gigaworks.seatbidding.persistence.BiddingRoundEntity round,
-            RoundAllocation.Solution solution) {
+            RoundAllocation.Solution solution, PlacementAudit placement) {
         var audit = new RoundAllocationAuditEntity();
         audit.round = round;
-        audit.algorithmVersion = RoundAllocation.ALGORITHM_VERSION;
+        audit.algorithmVersion = round.floorPlanVersion == null ? RoundAllocation.ALGORITHM_VERSION
+                : "v5-floor-plan";
         audit.inputFingerprint = solution.inputFingerprint();
         audit.objectiveSummary = objectiveSummary(solution.objective());
         audit.pairingAudit = solution.pairingAudit();
         audit.selectedSolutionFingerprint = solution.selectedSolutionFingerprint();
         audit.randomSelectionValue = null;
         audit.capacitySelectionValue = solution.capacitySelectionValue();
+        audit.seatPlacementInputFingerprint = placement.inputFingerprint();
+        audit.seatPlacementObjectiveSummary = placement.objectiveSummary();
+        audit.seatPlacementAudit = placement.auditJson();
+        audit.seatPlacementSelectionValue = placement.selectionValue();
         allocationAudits.persist(audit);
+    }
+
+    private PlacementAudit placeSeats(de.gigaworks.seatbidding.persistence.BiddingRoundEntity round,
+            RoundAllocation.Solution solution) {
+        if (round.floorPlanVersion == null) {
+            return PlacementAudit.empty();
+        }
+        var seatEntities = floorPlanSeats.findActiveForVersion(round.floorPlanVersion.id).stream()
+                .map(value -> value.physicalSeat).toList();
+        var employeeIds = solution.results().stream().filter(RoundAllocation.Result::assigned)
+                .flatMap(value -> value.members().stream()).map(RoundAllocation.MemberResult::employeeId)
+                .collect(java.util.stream.Collectors.toSet());
+        Map<Long, Map<Long, Integer>> ratings = new HashMap<>();
+        Map<Long, Long> revisions = new HashMap<>();
+        for (Long employeeId : employeeIds) {
+            preferenceRevisions.findAtCutoff(employeeId, round.floorPlanVersion.floorPlan.id, round.cutoffAt)
+                    .ifPresent(revision -> {
+                        revisions.put(employeeId, revision.revisionNo);
+                        var effective = preferences.findForRevision(revision.id).stream().collect(
+                                Collectors.toMap(value -> value.physicalSeat.id, value -> (int) value.stars));
+                        if (!effective.isEmpty()) {
+                            ratings.put(employeeId, effective);
+                        }
+                    });
+        }
+        Map<String, PhysicalSeatEntity> byUnit = new HashMap<>();
+        var selectionValues = new java.util.ArrayList<String>();
+        for (var date : solution.results().stream().map(RoundAllocation.Result::dateId).distinct().toList()) {
+            var successful = solution.results().stream().filter(value -> value.dateId() == date && value.assigned())
+                    .toList();
+            var result = seatPlacementOptimizer.place(successful, seatEntities, ratings);
+            result.byFairnessIdentity().forEach((identity, seat) -> byUnit.put(date + "|" + identity, seat));
+            selectionValues.add(date + ":" + result.selectionValue());
+        }
+        String canonical = byUnit.entrySet().stream().sorted(Map.Entry.comparingByKey())
+                .map(value -> value.getKey() + "=" + value.getValue().id).collect(Collectors.joining(","));
+        String ratingInput = ratings.entrySet().stream().sorted(Map.Entry.comparingByKey())
+                .map(employee -> employee.getKey() + ":" + employee.getValue().entrySet().stream()
+                        .sorted(Map.Entry.comparingByKey()).map(value -> value.getKey() + "=" + value.getValue())
+                        .collect(Collectors.joining(";"))).collect(Collectors.joining(","));
+        String seatInput = seatEntities.stream().sorted(java.util.Comparator.comparingInt(value -> value.seatNumber))
+                .map(value -> value.id + "=" + value.seatNumber).collect(Collectors.joining(","));
+        String input = "version=" + round.floorPlanVersion.id + "|seats=" + seatInput + "|ratings=" + ratingInput;
+        String revisionsJson = revisions.entrySet().stream().sorted(Map.Entry.comparingByKey())
+                .map(value -> "\"" + value.getKey() + "\":" + value.getValue()).collect(Collectors.joining(","));
+        return new PlacementAudit(Map.copyOf(byUnit), AllocationFingerprints.seatPlacement(input),
+                "{\"objective\":\"max-min-ratings-then-token-priority\"}",
+                "{\"version\":\"v1\",\"preferenceRevisions\":{" + revisionsJson + "},\"mapping\":\""
+                        + canonical + "\",\"ratings\":\"" + ratingInput + "\"}",
+                String.join(",", selectionValues));
+    }
+
+    private record PlacementAudit(Map<String, PhysicalSeatEntity> byUnit, String inputFingerprint,
+            String objectiveSummary, String auditJson, String selectionValue) {
+
+        static PlacementAudit empty() {
+            return new PlacementAudit(Map.of(), null, null, null, null);
+        }
     }
 
     private static String objectiveSummary(RoundAllocation.Objective objective) {

@@ -45,6 +45,14 @@ public class BiddingRoundEntity extends AuditedEntity {
     
     @Column(name = "seat_capacity", nullable = false)
     public int seatCapacity;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "capacity_source", nullable = false, length = 20)
+    public CapacitySource capacitySource = CapacitySource.CONFIGURATION;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "floor_plan_version_id")
+    public FloorPlanVersionEntity floorPlanVersion;
     
     @Column(name = "processing_started_at")
     public Instant processingStartedAt;
@@ -57,4 +65,3 @@ public class BiddingRoundEntity extends AuditedEntity {
     public BiddingRoundEntity predecessor;
     
 }
-

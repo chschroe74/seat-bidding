@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:go_router/go_router.dart';
 import '../../core/api_client.dart';
 import '../../core/models.dart';
 
@@ -40,6 +41,12 @@ class _AssignmentsScreenState extends State<AssignmentsScreen> {
                             'Seat assignments',
                             style: Theme.of(context).textTheme.headlineMedium,
                         ),
+                        if (assignments.floorPlanVersionId != null)
+                            Align(alignment: Alignment.centerLeft, child: OutlinedButton.icon(
+                                onPressed: () => context.go('/assignments/floor-plan'),
+                                icon: const Icon(Icons.map_outlined),
+                                label: const Text('View floor plan'),
+                            )),
                         const SizedBox(height: 8),
                         Text(
                             'Published ${DateFormat.yMd().add_Hm().format(assignments.publishedAt.toLocal())}',
@@ -210,6 +217,11 @@ class _ParticipantRow extends StatelessWidget {
                 if (participant.attendancePeriod != AttendancePeriod.fullDay)
                     Chip(
                         label: Text(participant.attendancePeriod.label),
+                        visualDensity: VisualDensity.compact,
+                    ),
+                if (participant.seatNumber != null)
+                    Chip(
+                        label: Text('Seat ${participant.seatNumber}'),
                         visualDensity: VisualDensity.compact,
                     ),
             ],

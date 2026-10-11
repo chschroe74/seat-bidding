@@ -59,6 +59,10 @@ final class AllocationFingerprints {
         return sha256(value.toString());
     }
 
+    static String seatPlacement(String value) {
+        return sha256("seat-bidding-seat-placement|v1\n" + value);
+    }
+
     private static String sha256(String value) {
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")

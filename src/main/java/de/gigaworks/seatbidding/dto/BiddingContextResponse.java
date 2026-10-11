@@ -2,6 +2,7 @@ package de.gigaworks.seatbidding.dto;
 
 import de.gigaworks.seatbidding.persistence.RoundStatus;
 import de.gigaworks.seatbidding.persistence.AttendancePeriod;
+import de.gigaworks.seatbidding.persistence.CapacitySource;
 
 import java.time.DayOfWeek;
 import java.time.Instant;
@@ -18,6 +19,8 @@ public record BiddingContextResponse(
         String cutoffTimeZone,
         Instant serverTime,
         int seatCapacity,
+        CapacitySource capacitySource,
+        Long floorPlanVersionId,
         int startingBalance,
         int bidTotal,
         int availableToBid,

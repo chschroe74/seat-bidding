@@ -21,7 +21,15 @@ class HelpScreen extends StatelessWidget {
             ),
             _Help(
                 'How seats are assigned',
-                'Complementary morning and afternoon bids are paired before seats are ranked. When one side is larger, the highest bids on that side are paired; high morning bids are matched with lower afternoon bids. A pair shares one physical seat and competes using its combined bid. Unmatched half-day bids still compete individually. Equal bids at the seat boundary are considered across the whole week and successful tie-breaks are distributed as evenly as possible. Random choice is used only when equally valid pairing or equally fair allocation choices remain.',
+                'Complementary morning and afternoon bids are paired before seats are ranked. When one side is larger, the highest bids on that side are paired; high morning bids are matched with lower afternoon bids. A pair shares one physical seat and competes using its combined bid. Unmatched half-day bids still compete individually. Equal bids at the seat boundary are considered across the whole week and successful tie-breaks are distributed as evenly as possible. When a floor plan is active, successful employees are then placed globally to protect the worst preference outcomes first and use unit token order only to break equally fair outcomes. Random choice is used only when equally valid choices remain.',
+            ),
+            _Help(
+                'Floor plans and seat preferences',
+                'When the current round has a floor plan, its numbered active seats replace the configured seat capacity. Bids still compete for a seat on a date, never for a particular seat. You may rate any number of seats with one or two stars and one preferred seat with three stars. Zero stars means least preferred, not forbidden, so any active seat can still be assigned. Preferences belong to your profile, remain private, and can be changed at any time; a change recorded after cutoff applies only to later rounds. Pair members receive the same physical seat, and each person’s rating is considered in placement.',
+            ),
+            _Help(
+                'Floor-plan privacy',
+                'The floor plan shows seat numbers and your private ratings only. It never displays occupants, colleagues’ assigned seats, or colleagues’ preferences. Your own assigned seat number appears in the assignment list; use View floor plan there to locate it on the numbered map for that completed round.',
             ),
             _Help(
                 'Assignment cards',

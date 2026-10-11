@@ -197,6 +197,15 @@ class _SeatReservationsScreenState extends State<SeatReservationsScreen> {
         style: Theme.of(context).textTheme.headlineMedium,
       ),
       const SizedBox(height: 16),
+      Align(
+        alignment: Alignment.centerLeft,
+        child: OutlinedButton.icon(
+          onPressed: () => context.go('/admin/floor-plan'),
+          icon: const Icon(Icons.map_outlined),
+          label: const Text('Manage floor plan'),
+        ),
+      ),
+      const SizedBox(height: 16),
       Text('Add reservation', style: Theme.of(context).textTheme.titleLarge),
       const SizedBox(height: 8),
       Row(

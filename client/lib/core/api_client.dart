@@ -1,4 +1,5 @@
 import 'package:dio/dio.dart';
+import 'dart:typed_data';
 import 'auth_service.dart';
 import 'models.dart';
 import 'web_push_client.dart';
@@ -13,6 +14,39 @@ class ApiClient {
     Future<BiddingContext> currentBidding() async => BiddingContext.fromJson(
         (await auth.dio.get<Map<String, dynamic>>('/bidding/current')).data!,
     );
+
+    Future<FloorPlan?> currentFloorPlan() async {
+        try {
+            return FloorPlan.fromJson((await auth.dio.get<Map<String, dynamic>>(
+                '/floor-plan/current',
+            )).data!);
+        } on DioException catch (error) {
+            if (error.response?.statusCode == 404 ||
+                    error.error is Problem && (error.error as Problem).status == 404) {
+                return null;
+            }
+            rethrow;
+        }
+    }
+
+    Future<FloorPlan> latestAssignmentsFloorPlan() async => FloorPlan.fromJson(
+        (await auth.dio.get<Map<String, dynamic>>('/assignments/latest/floor-plan')).data!,
+    );
+
+    Future<Uint8List> floorPlanSvg(String url) async => Uint8List.fromList(
+        (await auth.dio.get<List<int>>(url, options: Options(responseType: ResponseType.bytes))).data!,
+    );
+
+    Future<FloorPlan> replaceSeatPreferences(FloorPlan plan, List<FloorPlanSeat> seats) async =>
+        FloorPlan.fromJson((await _mutation<Map<String, dynamic>>(() =>
+            auth.dio.put<Map<String, dynamic>>('/floor-plan/current/preferences', data: {
+                'roundId': plan.roundId,
+                'floorPlanVersionId': plan.versionId,
+                'preferenceRevision': plan.preferenceRevision,
+                'preferences': seats.where((seat) => seat.stars > 0)
+                    .map((seat) => {'seatId': seat.id, 'stars': seat.stars}).toList(),
+            }),
+        )).data!);
     Future<BiddingContext> replaceBids(
         int roundId,
         Map<DateTime, int> values, [
@@ -91,6 +125,64 @@ class ApiClient {
                 auth.dio.delete<void>('/admin/seat-reservations/$id');
         await _adminMutation(send);
     }
+
+    Future<AdminFloorPlan> adminFloorPlan() async => AdminFloorPlan.fromJson(
+        (await auth.dio.get<Map<String, dynamic>>('/admin/floor-plan')).data!,
+    );
+
+    Future<AdminFloorPlan> uploadFloorPlan(Uint8List bytes) async => AdminFloorPlan.fromJson(
+        (await _adminMutation<Map<String, dynamic>>(() => auth.dio.post<Map<String, dynamic>>(
+            '/admin/floor-plan/draft/upload',
+            data: FormData.fromMap({'file': MultipartFile.fromBytes(bytes, filename: 'floor-plan.svg',
+                contentType: DioMediaType.parse('image/svg+xml'))}),
+        ))).data!,
+    );
+
+    Future<AdminFloorPlan> addFloorPlanSeat(int revision, double x, double y) =>
+        _floorPlanMutation('/admin/floor-plan/draft/seats', 'POST', revision, x, y);
+
+    Future<AdminFloorPlan> moveFloorPlanSeat(int seatId, int revision, double x, double y) =>
+        _floorPlanMutation('/admin/floor-plan/draft/seats/$seatId', 'PUT', revision, x, y);
+
+    Future<AdminFloorPlan> _floorPlanMutation(String path, String method, int revision, double x, double y) async =>
+        AdminFloorPlan.fromJson((await _adminMutation<Map<String, dynamic>>(() => auth.dio.request(
+            path, data: {'draftRevision': revision, 'normalizedX': x, 'normalizedY': y},
+            options: Options(method: method),
+        ))).data!);
+
+    Future<AdminFloorPlan> deleteFloorPlanSeat(int seatId, int revision) async => AdminFloorPlan.fromJson(
+        (await _adminMutation<Map<String, dynamic>>(() => auth.dio.delete(
+            '/admin/floor-plan/draft/seats/$seatId', data: {'revision': revision},
+        ))).data!,
+    );
+
+    Future<AdminFloorPlan> restoreFloorPlanSeat(int seatId, int revision) async => AdminFloorPlan.fromJson(
+        (await _adminMutation<Map<String, dynamic>>(() => auth.dio.post(
+            '/admin/floor-plan/draft/seats/$seatId/restore', data: {'revision': revision},
+        ))).data!,
+    );
+
+    Future<AdminFloorPlan> removeAllFloorPlanSeats(int revision) async => AdminFloorPlan.fromJson(
+        (await _adminMutation<Map<String, dynamic>>(() => auth.dio.post(
+            '/admin/floor-plan/draft/remove-all-seats', data: {'revision': revision, 'confirmed': true},
+        ))).data!,
+    );
+
+    Future<AdminFloorPlan> publishFloorPlan(int revision) async => AdminFloorPlan.fromJson(
+        (await _adminMutation<Map<String, dynamic>>(() => auth.dio.post(
+            '/admin/floor-plan/draft/publish', data: {'revision': revision},
+        ))).data!,
+    );
+
+    Future<void> discardFloorPlanDraft() async {
+        await _adminMutation<void>(() => auth.dio.delete<void>('/admin/floor-plan/draft'));
+    }
+
+    Future<AdminFloorPlan> deactivateFloorPlan(int revision) async => AdminFloorPlan.fromJson(
+        (await _adminMutation<Map<String, dynamic>>(() => auth.dio.post(
+            '/admin/floor-plan/deactivation', data: {'stateRevision': revision, 'confirmed': true},
+        ))).data!,
+    );
 
     Future<NotificationSettings> notificationSettings() async =>
             NotificationSettings.fromJson(

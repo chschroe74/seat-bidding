@@ -5,6 +5,7 @@ import 'core/api_client.dart';
 import 'core/auth_service.dart';
 import 'features/assignments/assignments_screen.dart';
 import 'features/admin/seat_reservations_screen.dart';
+import 'features/admin/floor_plan_admin_screen.dart';
 import 'features/auth/activation_code_screen.dart';
 import 'features/auth/create_password_screen.dart';
 import 'features/auth/login_screen.dart';
@@ -12,6 +13,7 @@ import 'features/bidding/bids_screen.dart';
 import 'features/help/help_screen.dart';
 import 'features/settings/settings_screen.dart';
 import 'features/settings/skip_reminders_screen.dart';
+import 'features/floor_plan/floor_plan_screen.dart';
 
 class SeatBiddingApp extends StatefulWidget {
     const SeatBiddingApp({super.key, required this.auth});
@@ -55,11 +57,15 @@ class _SeatBiddingAppState extends State<SeatBiddingApp> {
             ),
             ShellRoute(
                 builder: (context, state, child) =>
-                        AppShell(auth: widget.auth, location: state.uri.path, child: child),
+                        AppShell(auth: widget.auth, api: api, location: state.uri.path, child: child),
                 routes: [
                     GoRoute(
                         path: '/assignments',
                         builder: (context, state) => AssignmentsScreen(api: api),
+                    ),
+                    GoRoute(
+                        path: '/assignments/floor-plan',
+                        builder: (context, state) => FloorPlanScreen(api: api, readOnly: true),
                     ),
                     GoRoute(
                         path: '/bids',
@@ -69,6 +75,10 @@ class _SeatBiddingAppState extends State<SeatBiddingApp> {
                                 state.uri.queryParameters['reminderRoundId'] ?? '',
                             ),
                         ),
+                    ),
+                    GoRoute(
+                        path: '/floor-plan',
+                        builder: (context, state) => FloorPlanScreen(api: api),
                     ),
                     GoRoute(
                         path: '/settings',
@@ -93,6 +103,16 @@ class _SeatBiddingAppState extends State<SeatBiddingApp> {
                             builder: (context, state) =>
                                     SeatReservationAdminGate(auth: widget.auth, api: api),
                         ),
+                    if (kIsWeb)
+                        GoRoute(
+                            path: '/admin/floor-plan',
+                            builder: (context, state) => LayoutBuilder(builder: (context, constraints) {
+                                if (constraints.maxWidth < 800 || widget.auth.user?.isAdmin != true) {
+                                    return const Center(child: Text('Floor-plan management requires an administrator using the desktop web application.'));
+                                }
+                                return FloorPlanAdminScreen(api: api);
+                            }),
+                        ),
                 ],
             ),
         ],
@@ -113,40 +133,67 @@ class _SeatBiddingAppState extends State<SeatBiddingApp> {
     );
 }
 
-class AppShell extends StatelessWidget {
+class AppShell extends StatefulWidget {
     const AppShell({
         super.key,
         required this.auth,
+        this.api,
         required this.location,
         required this.child,
         bool? isWeb,
     }) : isWeb = isWeb ?? kIsWeb;
     final AuthService auth;
+    final ApiClient? api;
     final String location;
     final Widget child;
     final bool isWeb;
-    int get selected => location.startsWith('/admin')
+
+    @override
+    State<AppShell> createState() => _AppShellState();
+}
+
+class _AppShellState extends State<AppShell> {
+    bool hasFloorPlan = false;
+
+    @override
+    void initState() {
+        super.initState();
+        widget.api?.currentFloorPlan().then((value) {
+            if (mounted) setState(() => hasFloorPlan = value != null);
+        }, onError: (Object _, StackTrace stackTrace) {});
+    }
+
+    int get selected => widget.location.startsWith('/admin')
+            ? (hasFloorPlan ? 3 : 2)
+            : widget.location.startsWith('/floor-plan')
             ? 2
-            : location.startsWith('/bids')
+            : widget.location.startsWith('/bids')
             ? 1
             : 0;
-    void navigate(BuildContext context, int index) => context.go(
-        index == 0
-                ? '/assignments'
-                : index == 1
-                ? '/bids'
-                : '/admin/reservations',
-    );
+    void navigate(BuildContext context, int index) {
+        if (index == 0) {
+            context.go('/assignments');
+        }
+        else if (index == 1) {
+            context.go('/bids');
+        }
+        else if (hasFloorPlan && index == 2) {
+            context.go('/floor-plan');
+        }
+        else {
+            context.go('/admin/reservations');
+        }
+    }
 
     @override
     Widget build(BuildContext context) => LayoutBuilder(
         builder: (context, constraints) {
             final wide = constraints.maxWidth >= 800;
-            final showAdmin = wide && isWeb && auth.user?.isAdmin == true;
+            final showAdmin = wide && widget.isWeb && widget.auth.user?.isAdmin == true;
             final promotion =
-                    isWeb &&
+                    widget.isWeb &&
                     defaultTargetPlatform == TargetPlatform.android &&
-                    auth.configuration.androidDownloadUrl != null;
+                    widget.auth.configuration.androidDownloadUrl != null;
             return Scaffold(
                 appBar: AppBar(
                     title: const Text('Office seats'),
@@ -164,7 +211,7 @@ class AppShell extends StatelessWidget {
                                         builder: (_) => AlertDialog(
                                             title: const Text('Get the Android app'),
                                             content: SelectableText(
-                                                auth.configuration.androidDownloadUrl!,
+                                                widget.auth.configuration.androidDownloadUrl!,
                                             ),
                                             actions: [
                                                 TextButton(
@@ -176,7 +223,7 @@ class AppShell extends StatelessWidget {
                                     );
                                 }
                                 if (value == 'logout') {
-                                    await auth.logout();
+                                    await widget.auth.logout();
                                     if (context.mounted) context.go('/login');
                                 }
                             },
@@ -197,7 +244,7 @@ class AppShell extends StatelessWidget {
                         ? Row(
                                 children: [
                                     NavigationRail(
-                                        selectedIndex: showAdmin || selected < 2 ? selected : 0,
+                                        selectedIndex: selected < 2 || hasFloorPlan || showAdmin ? selected : 0,
                                         onDestinationSelected: (index) => navigate(context, index),
                                         labelType: NavigationRailLabelType.all,
                                         destinations: [
@@ -209,6 +256,11 @@ class AppShell extends StatelessWidget {
                                                 icon: Icon(Icons.gavel),
                                                 label: Text('Place bids'),
                                             ),
+                                            if (hasFloorPlan)
+                                                const NavigationRailDestination(
+                                                    icon: Icon(Icons.map_outlined),
+                                                    label: Text('Seat preferences'),
+                                                ),
                                             if (showAdmin)
                                                 const NavigationRailDestination(
                                                     icon: Icon(Icons.admin_panel_settings),
@@ -217,24 +269,29 @@ class AppShell extends StatelessWidget {
                                         ],
                                     ),
                                     const VerticalDivider(width: 1),
-                                    Expanded(child: child),
+                                    Expanded(child: widget.child),
                                 ],
                             )
-                        : child,
+                        : widget.child,
                 bottomNavigationBar: wide
                         ? null
                         : NavigationBar(
-                                selectedIndex: selected < 2 ? selected : 0,
+                                selectedIndex: selected < (hasFloorPlan ? 3 : 2) ? selected : 0,
                                 onDestinationSelected: (index) => navigate(context, index),
-                                destinations: const [
-                                    NavigationDestination(
+                                destinations: [
+                                    const NavigationDestination(
                                         icon: Icon(Icons.event_seat),
                                         label: 'Seat assignments',
                                     ),
-                                    NavigationDestination(
+                                    const NavigationDestination(
                                         icon: Icon(Icons.gavel),
                                         label: 'Place bids',
                                     ),
+                                    if (hasFloorPlan)
+                                        const NavigationDestination(
+                                            icon: Icon(Icons.map_outlined),
+                                            label: 'Seat preferences',
+                                        ),
                                 ],
                             ),
             );

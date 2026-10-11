@@ -47,7 +47,9 @@ public class AssignmentQueryService {
                 return new AssignmentsResponse.Participant(a.allocationUnit.id, a.allocationUnit.unitType,
                         a.allocationUnit.finalRank, a.allocationUnit.scoreTokens, employee.id,
                         employee.firstName, employee.lastName, a.bid.tokens, a.attendancePeriod,
-                        a.assigned, a.displayRank, employee.id.equals(current.id));
+                        a.assigned, a.displayRank, employee.id.equals(current.id),
+                        employee.id.equals(current.id) && a.allocationUnit.physicalSeat != null
+                                ? a.allocationUnit.physicalSeat.seatNumber : null);
             }).toList();
             int assignedEmployeeCount = (int) results.stream().filter(a -> a.assigned).count();
             int occupiedSeatCount = (int) results.stream().filter(a -> a.assigned)
@@ -59,7 +61,8 @@ public class AssignmentQueryService {
                     reservation == null ? null : reservation.description,
                     occupiedSeatCount, assignedEmployeeCount, participants);
         }).toList();
-        return new AssignmentsResponse(round.id, round.status.name(), round.processedAt, round.seatCapacity, days);
+        return new AssignmentsResponse(round.id, round.status.name(), round.processedAt, round.seatCapacity,
+                round.capacitySource, round.floorPlanVersion == null ? null : round.floorPlanVersion.id, days);
     }
     
 

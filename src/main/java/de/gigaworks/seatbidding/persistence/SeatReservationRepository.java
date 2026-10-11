@@ -38,5 +38,9 @@ public class SeatReservationRepository implements PanacheRepositoryBase<SeatRese
         }
         return find("targetDate in ?1 order by targetDate", dates).list();
     }
+
+    public List<SeatReservationEntity> findFromForUpdate(LocalDate date) {
+        return find("targetDate >= ?1 order by targetDate", date).withLock(LockModeType.PESSIMISTIC_WRITE).list();
+    }
     
 }

@@ -4,6 +4,9 @@ import de.gigaworks.seatbidding.exception.ConfigurationException;
 import de.gigaworks.seatbidding.persistence.BiddingRoundEntity;
 import de.gigaworks.seatbidding.persistence.BiddingRoundRepository;
 import de.gigaworks.seatbidding.persistence.EmployeeRepository;
+import de.gigaworks.seatbidding.persistence.CapacitySource;
+import de.gigaworks.seatbidding.persistence.FloorPlanRepository;
+import de.gigaworks.seatbidding.persistence.FloorPlanVersionSeatRepository;
 import de.gigaworks.seatbidding.persistence.LedgerType;
 import de.gigaworks.seatbidding.persistence.RoundDateEntity;
 import de.gigaworks.seatbidding.persistence.RoundDateRepository;
@@ -47,14 +50,40 @@ public class RoundFactory {
     @Inject
     SeatReservationRepository reservations;
 
+    @Inject
+    FloorPlanRepository floorPlans;
+
+    @Inject
+    FloorPlanVersionSeatRepository floorPlanSeats;
+
     public BiddingRoundEntity create(long sequenceNo, Instant opensAt, Instant cutoffSearchStart,
             BiddingRoundEntity predecessor, Map<Long, Integer> carryByEmployee) {
         var zone = configuration.timeZone();
         var cutoffAt = schedule.nextCutoff(configuration.scheduler().cron(), zone, cutoffSearchStart);
         var targetDates = schedule.targetDates(cutoffAt, zone);
+        var plan = floorPlans.findSingletonForUpdate().orElse(null);
+        if (plan != null) {
+            if (plan.pendingVersion != null) {
+                plan.activeVersion = plan.pendingVersion;
+                plan.pendingVersion = null;
+                plan.pendingDeactivation = false;
+                plan.stateRevision++;
+            }
+            else if (plan.pendingDeactivation) {
+                plan.activeVersion = null;
+                plan.pendingDeactivation = false;
+                plan.stateRevision++;
+            }
+        }
+        var activeVersion = plan == null ? null : plan.activeVersion;
+        int capacity = activeVersion == null ? configuration.seatCapacity()
+                : floorPlanSeats.findActiveForVersion(activeVersion.id).size();
+        if (capacity < 1) {
+            throw new ConfigurationException("The active floor plan must contain at least one seat");
+        }
         var existingReservations = reservations.findForDatesForUpdate(targetDates);
-        if (existingReservations.stream().anyMatch(value -> value.reservedSeatCount > configuration.seatCapacity())) {
-            throw new ConfigurationException("An existing seat reservation exceeds the configured physical capacity");
+        if (existingReservations.stream().anyMatch(value -> value.reservedSeatCount > capacity)) {
+            throw new ConfigurationException("An existing seat reservation exceeds the applicable physical capacity");
         }
         var round = new BiddingRoundEntity();
         round.status = RoundStatus.OPEN;
@@ -64,7 +93,9 @@ public class RoundFactory {
         round.scheduleZone = zone.getId();
         round.tokensGranted = configuration.tokensPerRound();
         round.carryOverCap = configuration.carryOverCap();
-        round.seatCapacity = configuration.seatCapacity();
+        round.seatCapacity = capacity;
+        round.capacitySource = activeVersion == null ? CapacitySource.CONFIGURATION : CapacitySource.FLOOR_PLAN;
+        round.floorPlanVersion = activeVersion;
         round.predecessor = predecessor;
         rounds.persist(round);
         rounds.flush();

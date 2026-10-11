@@ -53,6 +53,10 @@ public class AllocationUnitEntity {
     @Column(name = "boundary_tie_group", length = 64, updatable = false)
     public String boundaryTieGroup;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "physical_seat_id")
+    public PhysicalSeatEntity physicalSeat;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     public Instant createdAt;
 

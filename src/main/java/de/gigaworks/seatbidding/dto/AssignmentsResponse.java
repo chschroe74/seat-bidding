@@ -2,6 +2,7 @@ package de.gigaworks.seatbidding.dto;
 
 import de.gigaworks.seatbidding.persistence.AllocationUnitType;
 import de.gigaworks.seatbidding.persistence.AttendancePeriod;
+import de.gigaworks.seatbidding.persistence.CapacitySource;
 
 import java.time.DayOfWeek;
 import java.time.Instant;
@@ -16,6 +17,8 @@ public record AssignmentsResponse(
         String status,
         Instant publishedAt,
         int seatCapacity,
+        CapacitySource capacitySource,
+        Long floorPlanVersionId,
         List<AssignmentDay> days) {
     
     public enum MyStatus {NO_BID, ASSIGNED, NOT_ASSIGNED}
@@ -45,7 +48,8 @@ public record AssignmentsResponse(
             AttendancePeriod attendancePeriod,
             boolean assigned,
             int displayRank,
-            boolean isCurrentUser) {
+            boolean isCurrentUser,
+            Integer seatNumber) {
         
     }
     

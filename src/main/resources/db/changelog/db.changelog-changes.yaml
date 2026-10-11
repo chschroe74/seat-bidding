@@ -9,3 +9,5 @@ databaseChangeLog:
       file: db/changelog/changes/004-half-day-allocation-units.yaml
   - include:
       file: db/changelog/changes/005-web-push-bid-reminders.yaml
+  - include:
+      file: db/changelog/changes/006-floor-plans.yaml

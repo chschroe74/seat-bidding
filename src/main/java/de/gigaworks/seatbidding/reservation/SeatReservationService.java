@@ -10,6 +10,8 @@ import de.gigaworks.seatbidding.persistence.BiddingRoundRepository;
 import de.gigaworks.seatbidding.persistence.RoundStatus;
 import de.gigaworks.seatbidding.persistence.SeatReservationEntity;
 import de.gigaworks.seatbidding.persistence.SeatReservationRepository;
+import de.gigaworks.seatbidding.persistence.FloorPlanRepository;
+import de.gigaworks.seatbidding.persistence.FloorPlanVersionSeatRepository;
 import de.gigaworks.seatbidding.round.SeatBiddingConfiguration;
 
 import jakarta.enterprise.context.ApplicationScoped;
@@ -40,6 +42,12 @@ public class SeatReservationService {
 
     @Inject
     SeatBiddingConfiguration configuration;
+
+    @Inject
+    FloorPlanRepository floorPlans;
+
+    @Inject
+    FloorPlanVersionSeatRepository floorPlanSeats;
 
     @Inject
     Clock clock;
@@ -127,7 +135,7 @@ public class SeatReservationService {
 
     private int applicableCapacity(BiddingRoundEntity round, java.time.Instant now) {
         if (round == null) {
-            return configuration.seatCapacity();
+            return prospectiveCapacity(true);
         }
         ensureMutable(round, now);
         return round.seatCapacity;
@@ -142,11 +150,20 @@ public class SeatReservationService {
 
     private SeatReservationResponse response(SeatReservationEntity reservation, BiddingRoundEntity round,
             java.time.Instant now) {
-        int capacity = round == null ? configuration.seatCapacity() : round.seatCapacity;
+        int capacity = round == null ? prospectiveCapacity(false) : round.seatCapacity;
         boolean mutable = round == null || round.status == RoundStatus.OPEN && now.isBefore(round.cutoffAt);
         return new SeatReservationResponse(reservation.id, reservation.targetDate, reservation.reservedSeatCount,
                 capacity, reservation.description, mutable, round == null ? null : round.cutoffAt,
                 round == null ? null : round.status.name());
+    }
+
+    private int prospectiveCapacity(boolean lock) {
+        var plan = (lock ? floorPlans.findSingletonForUpdate() : floorPlans.findSingleton()).orElse(null);
+        if (plan == null || plan.pendingDeactivation) {
+            return configuration.seatCapacity();
+        }
+        var version = plan.pendingVersion != null ? plan.pendingVersion : plan.activeVersion;
+        return version == null ? configuration.seatCapacity() : floorPlanSeats.findActiveForVersion(version.id).size();
     }
 
     private static LocalDate parseDate(String value, String field) {

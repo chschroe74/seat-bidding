@@ -26,7 +26,7 @@ class LiquibaseUpgradeTest {
             postgres.start();
             update(postgres, "db/changelog/db.changelog-master.yaml", postgres.getUsername());
             try (var connection = connection(postgres)) {
-                assertEquals(8, scalarInt(connection, "SELECT count(*) FROM databasechangelog"));
+                assertEquals(9, scalarInt(connection, "SELECT count(*) FROM databasechangelog"));
                 assertEquals(1, scalarInt(connection, "SELECT count(*) FROM information_schema.tables "
                         + "WHERE table_schema='public' AND table_name='seat_reservation'"));
                 assertEquals(1, scalarInt(connection, "SELECT count(*) FROM information_schema.columns "
@@ -56,7 +56,7 @@ class LiquibaseUpgradeTest {
             }
             update(postgres, "db/changelog/db.changelog-master.yaml", "seat_bidding_application");
             try (var connection = connection(postgres)) {
-                assertEquals(8, scalarInt(connection, "SELECT count(*) FROM databasechangelog"));
+                assertEquals(9, scalarInt(connection, "SELECT count(*) FROM databasechangelog"));
             }
         }
     }
@@ -76,7 +76,7 @@ class LiquibaseUpgradeTest {
             update(postgres, "db/changelog/db.changelog-master.yaml", postgres.getUsername());
             update(postgres, "db/changelog/db.changelog-master.yaml", postgres.getUsername());
             try (var connection = connection(postgres)) {
-                assertEquals(8, scalarInt(connection, "SELECT count(*) FROM databasechangelog"));
+                assertEquals(9, scalarInt(connection, "SELECT count(*) FROM databasechangelog"));
                 assertEquals(1, scalarInt(connection, "SELECT count(*) FROM employee"));
                 assertEquals(0, scalarInt(connection, "SELECT count(*) FROM employee_notification_settings"));
                 assertEquals(0, scalarInt(connection, "SELECT count(*) FROM web_push_subscription"));

@@ -17,12 +17,16 @@ public class SecurityResponseFilter implements ContainerResponseFilter {
     public void filter(ContainerRequestContext request, ContainerResponseContext response) {
         String path = request.getUriInfo().getRequestUri().getPath();
         if (path.startsWith("/api/")) {
-            response.getHeaders().putSingle("Cache-Control", "no-store");
+            response.getHeaders().putSingle("Cache-Control",
+                    path.matches("/api/floor-plan/versions/[^/]+/svg") ? "private, no-cache" : "no-store");
             mapEmptyBadRequest(request, response, path);
         }
         response.getHeaders().putSingle("X-Content-Type-Options", "nosniff");
         response.getHeaders().putSingle("Referrer-Policy", "no-referrer");
-        response.getHeaders().putSingle("Content-Security-Policy", "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; connect-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; worker-src 'self' blob:");
+        response.getHeaders().putSingle("Content-Security-Policy",
+                path.matches("/api/floor-plan/versions/[^/]+/svg")
+                        ? "default-src 'none'; style-src 'unsafe-inline'"
+                        : "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; connect-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; worker-src 'self' blob:");
     }
 
     private void mapEmptyBadRequest(ContainerRequestContext request, ContainerResponseContext response, String path) {

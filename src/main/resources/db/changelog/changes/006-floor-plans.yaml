@@ -1,0 +1,140 @@
+databaseChangeLog:
+  - changeSet:
+      id: 006-floor-plans
+      author: codex
+      changes:
+        - createTable:
+            tableName: floor_plan
+            columns:
+              - column: { name: id, type: bigint, autoIncrement: true, constraints: { primaryKey: true, primaryKeyName: pk_floor_plan, nullable: false } }
+              - column: { name: permanent_number_watermark, type: integer, defaultValueNumeric: 0, constraints: { nullable: false } }
+              - column: { name: active_version_id, type: bigint }
+              - column: { name: pending_version_id, type: bigint }
+              - column: { name: pending_deactivation, type: boolean, defaultValueBoolean: false, constraints: { nullable: false } }
+              - column: { name: state_revision, type: bigint, defaultValueNumeric: 0, constraints: { nullable: false } }
+              - column: { name: created_at, type: timestamptz, defaultValueComputed: now(), constraints: { nullable: false } }
+              - column: { name: updated_at, type: timestamptz, defaultValueComputed: now(), constraints: { nullable: false } }
+        - createTable:
+            tableName: floor_plan_version
+            columns:
+              - column: { name: id, type: bigint, autoIncrement: true, constraints: { primaryKey: true, primaryKeyName: pk_floor_plan_version, nullable: false } }
+              - column: { name: floor_plan_id, type: bigint, constraints: { nullable: false } }
+              - column: { name: version_no, type: bigint, constraints: { nullable: false } }
+              - column: { name: base_version_id, type: bigint }
+              - column: { name: status, type: varchar(20), constraints: { nullable: false } }
+              - column: { name: draft_revision, type: bigint, defaultValueNumeric: 0, constraints: { nullable: false } }
+              - column: { name: sanitized_svg, type: text, constraints: { nullable: false } }
+              - column: { name: content_sha256, type: char(64), constraints: { nullable: false } }
+              - column: { name: view_box_min_x, type: numeric, constraints: { nullable: false } }
+              - column: { name: view_box_min_y, type: numeric, constraints: { nullable: false } }
+              - column: { name: view_box_width, type: numeric, constraints: { nullable: false } }
+              - column: { name: view_box_height, type: numeric, constraints: { nullable: false } }
+              - column: { name: published_at, type: timestamptz }
+              - column: { name: created_by_employee_id, type: bigint, constraints: { nullable: false } }
+              - column: { name: created_at, type: timestamptz, defaultValueComputed: now(), constraints: { nullable: false } }
+              - column: { name: updated_at, type: timestamptz, defaultValueComputed: now(), constraints: { nullable: false } }
+        - createTable:
+            tableName: physical_seat
+            columns:
+              - column: { name: id, type: bigint, autoIncrement: true, constraints: { primaryKey: true, primaryKeyName: pk_physical_seat, nullable: false } }
+              - column: { name: floor_plan_id, type: bigint, constraints: { nullable: false } }
+              - column: { name: seat_number, type: integer, constraints: { nullable: false } }
+              - column: { name: first_published_version_id, type: bigint }
+              - column: { name: retired_in_version_id, type: bigint }
+              - column: { name: created_at, type: timestamptz, defaultValueComputed: now(), constraints: { nullable: false } }
+        - createTable:
+            tableName: floor_plan_version_seat
+            columns:
+              - column: { name: id, type: bigint, autoIncrement: true, constraints: { primaryKey: true, primaryKeyName: pk_floor_plan_version_seat, nullable: false } }
+              - column: { name: floor_plan_version_id, type: bigint, constraints: { nullable: false } }
+              - column: { name: physical_seat_id, type: bigint, constraints: { nullable: false } }
+              - column: { name: seat_number, type: integer, constraints: { nullable: false } }
+              - column: { name: normalized_x, type: numeric, constraints: { nullable: false } }
+              - column: { name: normalized_y, type: numeric, constraints: { nullable: false } }
+              - column: { name: state, type: varchar(20), constraints: { nullable: false } }
+        - createTable:
+            tableName: employee_seat_preference_revision
+            columns:
+              - column: { name: id, type: bigint, autoIncrement: true, constraints: { primaryKey: true, primaryKeyName: pk_employee_seat_preference_revision, nullable: false } }
+              - column: { name: employee_id, type: bigint, constraints: { nullable: false } }
+              - column: { name: floor_plan_id, type: bigint, constraints: { nullable: false } }
+              - column: { name: revision_no, type: bigint, constraints: { nullable: false } }
+              - column: { name: created_at, type: timestamptz, constraints: { nullable: false } }
+        - createTable:
+            tableName: employee_seat_preference
+            columns:
+              - column: { name: id, type: bigint, autoIncrement: true, constraints: { primaryKey: true, primaryKeyName: pk_employee_seat_preference, nullable: false } }
+              - column: { name: revision_id, type: bigint, constraints: { nullable: false } }
+              - column: { name: physical_seat_id, type: bigint, constraints: { nullable: false } }
+              - column: { name: stars, type: smallint, constraints: { nullable: false } }
+        - addColumn:
+            tableName: bidding_round
+            columns:
+              - column: { name: capacity_source, type: varchar(20), defaultValue: CONFIGURATION, constraints: { nullable: false } }
+              - column: { name: floor_plan_version_id, type: bigint }
+        - addColumn:
+            tableName: allocation_unit
+            columns:
+              - column: { name: physical_seat_id, type: bigint }
+        - addColumn:
+            tableName: round_allocation_audit
+            columns:
+              - column: { name: seat_placement_input_fingerprint, type: char(64) }
+              - column: { name: seat_placement_objective_summary, type: jsonb }
+              - column: { name: seat_placement_audit, type: jsonb }
+              - column: { name: seat_placement_selection_value, type: varchar(255) }
+        - sql:
+            comment: Add floor-plan foreign keys, uniqueness, immutability-oriented checks, and partial indexes.
+            sql: |
+              ALTER TABLE floor_plan_version ADD CONSTRAINT fk_floor_plan_version_plan FOREIGN KEY (floor_plan_id) REFERENCES floor_plan(id);
+              ALTER TABLE floor_plan_version ADD CONSTRAINT fk_floor_plan_version_base FOREIGN KEY (base_version_id) REFERENCES floor_plan_version(id);
+              ALTER TABLE floor_plan_version ADD CONSTRAINT fk_floor_plan_version_creator FOREIGN KEY (created_by_employee_id) REFERENCES employee(id);
+              ALTER TABLE floor_plan ADD CONSTRAINT fk_floor_plan_active_version FOREIGN KEY (active_version_id) REFERENCES floor_plan_version(id);
+              ALTER TABLE floor_plan ADD CONSTRAINT fk_floor_plan_pending_version FOREIGN KEY (pending_version_id) REFERENCES floor_plan_version(id);
+              ALTER TABLE physical_seat ADD CONSTRAINT fk_physical_seat_plan FOREIGN KEY (floor_plan_id) REFERENCES floor_plan(id);
+              ALTER TABLE physical_seat ADD CONSTRAINT fk_physical_seat_first_version FOREIGN KEY (first_published_version_id) REFERENCES floor_plan_version(id);
+              ALTER TABLE physical_seat ADD CONSTRAINT fk_physical_seat_retired_version FOREIGN KEY (retired_in_version_id) REFERENCES floor_plan_version(id);
+              ALTER TABLE floor_plan_version_seat ADD CONSTRAINT fk_version_seat_version FOREIGN KEY (floor_plan_version_id) REFERENCES floor_plan_version(id);
+              ALTER TABLE floor_plan_version_seat ADD CONSTRAINT fk_version_seat_seat FOREIGN KEY (physical_seat_id) REFERENCES physical_seat(id);
+              ALTER TABLE employee_seat_preference_revision ADD CONSTRAINT fk_preference_revision_employee FOREIGN KEY (employee_id) REFERENCES employee(id);
+              ALTER TABLE employee_seat_preference_revision ADD CONSTRAINT fk_preference_revision_plan FOREIGN KEY (floor_plan_id) REFERENCES floor_plan(id);
+              ALTER TABLE employee_seat_preference ADD CONSTRAINT fk_preference_revision FOREIGN KEY (revision_id) REFERENCES employee_seat_preference_revision(id);
+              ALTER TABLE employee_seat_preference ADD CONSTRAINT fk_preference_seat FOREIGN KEY (physical_seat_id) REFERENCES physical_seat(id);
+              ALTER TABLE bidding_round ADD CONSTRAINT fk_round_floor_plan_version FOREIGN KEY (floor_plan_version_id) REFERENCES floor_plan_version(id);
+              ALTER TABLE allocation_unit ADD CONSTRAINT fk_allocation_unit_physical_seat FOREIGN KEY (physical_seat_id) REFERENCES physical_seat(id);
+              ALTER TABLE floor_plan ADD CONSTRAINT ck_floor_plan_pending CHECK (NOT (pending_version_id IS NOT NULL AND pending_deactivation));
+              ALTER TABLE floor_plan_version ADD CONSTRAINT ck_floor_plan_version_status CHECK (status IN ('DRAFT','PUBLISHED')),
+                ADD CONSTRAINT ck_floor_plan_view_box CHECK (view_box_width > 0 AND view_box_height > 0),
+                ADD CONSTRAINT ck_floor_plan_published_at CHECK ((status = 'DRAFT' AND published_at IS NULL) OR (status = 'PUBLISHED' AND published_at IS NOT NULL));
+              ALTER TABLE physical_seat ADD CONSTRAINT ck_physical_seat_number CHECK (seat_number > 0);
+              ALTER TABLE floor_plan_version_seat ADD CONSTRAINT ck_version_seat_state CHECK (state IN ('ACTIVE','PENDING_REMOVAL')),
+                ADD CONSTRAINT ck_version_seat_number CHECK (seat_number > 0),
+                ADD CONSTRAINT ck_version_seat_coordinates CHECK (normalized_x BETWEEN 0 AND 1 AND normalized_y BETWEEN 0 AND 1);
+              ALTER TABLE employee_seat_preference ADD CONSTRAINT ck_preference_stars CHECK (stars BETWEEN 1 AND 3);
+              ALTER TABLE bidding_round ADD CONSTRAINT ck_round_capacity_source CHECK ((capacity_source = 'CONFIGURATION' AND floor_plan_version_id IS NULL) OR (capacity_source = 'FLOOR_PLAN' AND floor_plan_version_id IS NOT NULL));
+              CREATE UNIQUE INDEX uq_floor_plan_singleton ON floor_plan ((true));
+              CREATE UNIQUE INDEX uq_floor_plan_version_number ON floor_plan_version (floor_plan_id, version_no);
+              CREATE UNIQUE INDEX uq_floor_plan_draft ON floor_plan_version (floor_plan_id) WHERE status = 'DRAFT';
+              CREATE UNIQUE INDEX uq_physical_seat_number ON physical_seat (floor_plan_id, seat_number);
+              CREATE UNIQUE INDEX uq_version_seat_identity ON floor_plan_version_seat (floor_plan_version_id, physical_seat_id);
+              CREATE UNIQUE INDEX uq_version_seat_number ON floor_plan_version_seat (floor_plan_version_id, seat_number);
+              CREATE UNIQUE INDEX uq_preference_revision_number ON employee_seat_preference_revision (employee_id, floor_plan_id, revision_no);
+              CREATE UNIQUE INDEX uq_preference_item ON employee_seat_preference (revision_id, physical_seat_id);
+              CREATE UNIQUE INDEX uq_preference_three_star ON employee_seat_preference (revision_id) WHERE stars = 3;
+              CREATE UNIQUE INDEX uq_allocation_unit_seat ON allocation_unit (round_date_id, physical_seat_id) WHERE physical_seat_id IS NOT NULL;
+      rollback:
+        - dropForeignKeyConstraint: { baseTableName: floor_plan, constraintName: fk_floor_plan_active_version }
+        - dropForeignKeyConstraint: { baseTableName: floor_plan, constraintName: fk_floor_plan_pending_version }
+        - dropColumn: { tableName: round_allocation_audit, columnName: seat_placement_selection_value }
+        - dropColumn: { tableName: round_allocation_audit, columnName: seat_placement_audit }
+        - dropColumn: { tableName: round_allocation_audit, columnName: seat_placement_objective_summary }
+        - dropColumn: { tableName: round_allocation_audit, columnName: seat_placement_input_fingerprint }
+        - dropColumn: { tableName: allocation_unit, columnName: physical_seat_id }
+        - dropColumn: { tableName: bidding_round, columnName: floor_plan_version_id }
+        - dropColumn: { tableName: bidding_round, columnName: capacity_source }
+        - dropTable: { tableName: employee_seat_preference }
+        - dropTable: { tableName: employee_seat_preference_revision }
+        - dropTable: { tableName: floor_plan_version_seat }
+        - dropTable: { tableName: physical_seat }
+        - dropTable: { tableName: floor_plan_version }
+        - dropTable: { tableName: floor_plan }

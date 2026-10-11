@@ -42,6 +42,10 @@ public interface SeatBiddingConfiguration {
     @Valid
     Reminders reminders();
 
+    @WithName("floor-plan")
+    @Valid
+    FloorPlan floorPlan();
+
     @WithName("public-client")
     @Valid
     PublicClient publicClient();
@@ -113,6 +117,29 @@ public interface SeatBiddingConfiguration {
         @WithName("android-download-url")
         Optional<String> androidDownloadUrl();
 
+    }
+
+    interface FloorPlan {
+
+        @WithName("max-active-seats")
+        @Min(1)
+        int maxActiveSeats();
+
+        @WithName("max-upload-bytes")
+        @Min(1)
+        long maxUploadBytes();
+
+        @WithName("max-elements")
+        @Min(1)
+        int maxElements();
+
+        @WithName("max-path-commands")
+        @Min(1)
+        int maxPathCommands();
+
+        @WithName("parse-timeout")
+        @NotNull
+        Duration parseTimeout();
     }
 
 }

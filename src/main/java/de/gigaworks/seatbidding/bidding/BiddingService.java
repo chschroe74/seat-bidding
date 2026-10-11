@@ -131,7 +131,9 @@ public class BiddingService {
         }).toList();
         return new BiddingContextResponse(participation.round.id, participation.round.status,
                 participation.round.cutoffAt, participation.round.scheduleZone, now,
-                participation.round.seatCapacity, participation.startingBalance, total,
+                participation.round.seatCapacity, participation.round.capacitySource,
+                participation.round.floorPlanVersion == null ? null : participation.round.floorPlanVersion.id,
+                participation.startingBalance, total,
                 participation.startingBalance - total, dayResponses);
     }
     
