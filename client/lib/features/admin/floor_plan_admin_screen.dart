@@ -35,7 +35,7 @@ class _FloorPlanAdminScreenState extends State<FloorPlanAdminScreen> {
     }
 
     Future<void> update(AdminFloorPlan value) async {
-        final version = value.draft ?? value.activeVersion;
+        final version = value.draft ?? value.pendingVersion ?? value.activeVersion;
         final bytes = version == null ? null : await widget.api.floorPlanSvg(version.svgUrl);
         if (mounted) {
             setState(() {
@@ -72,7 +72,7 @@ class _FloorPlanAdminScreenState extends State<FloorPlanAdminScreen> {
     @override
     Widget build(BuildContext context) {
         final draft = state?.draft;
-        final shown = draft ?? state?.activeVersion;
+        final shown = draft ?? state?.pendingVersion ?? state?.activeVersion;
         return ListView(padding: const EdgeInsets.all(24), children: [
             Text('Floor plan', style: Theme.of(context).textTheme.headlineMedium),
             Text(state?.pendingDeactivation == true ? 'Deactivation is pending for the next round.'
@@ -83,7 +83,8 @@ class _FloorPlanAdminScreenState extends State<FloorPlanAdminScreen> {
                 FilledButton.icon(onPressed: busy ? null : upload, icon: const Icon(Icons.upload_file),
                     label: Text(draft == null ? 'Upload SVG' : 'Replace SVG')),
                 if (draft != null) FilledButton(onPressed: busy || draft.seats.where((s) => s.state == 'ACTIVE').isEmpty
-                    ? null : () => mutate(() => widget.api.publishFloorPlan(draft.draftRevision)),
+                    || state?.publicationPreview?.reason == 'PENDING_CHANGE'
+                    ? null : () => _confirmPublish(context, draft),
                     child: const Text('Publish floor plan')),
                 if (draft != null) OutlinedButton.icon(
                     onPressed: busy ? null : () => setState(() { addMode = !addMode; selectedSeat = null; }),
@@ -103,6 +104,10 @@ class _FloorPlanAdminScreenState extends State<FloorPlanAdminScreen> {
                         child: const Text('Delete floor plan')),
             ]),
             const SizedBox(height: 12),
+            if (state?.publicationPreview != null)
+                _PublicationCard(timing: state!.publicationPreview!, published: false),
+            if (state?.publicationEffect != null)
+                _PublicationCard(timing: state!.publicationEffect!, published: true),
             for (final warning in state?.warnings ?? const <String>[])
                 Card(color: Theme.of(context).colorScheme.errorContainer,
                     child: ListTile(leading: const Icon(Icons.warning_amber), title: Text(warning))),
@@ -169,6 +174,24 @@ class _FloorPlanAdminScreenState extends State<FloorPlanAdminScreen> {
         if (confirmed == true && state != null) await mutate(() => widget.api.deactivateFloorPlan(state!.stateRevision));
     }
 
+    Future<void> _confirmPublish(BuildContext context, AdminFloorPlanVersion draft) async {
+        final timing = state?.publicationPreview;
+        if (timing == null) {
+            return;
+        }
+        final confirmed = await showDialog<bool>(context: context, builder: (context) => AlertDialog(
+            title: const Text('Publish floor plan?'),
+            content: Text(_publicationMessage(timing, published: false)),
+            actions: [
+                TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+                FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Publish')),
+            ],
+        ));
+        if (confirmed == true) {
+            await mutate(() => widget.api.publishFloorPlan(draft.draftRevision));
+        }
+    }
+
     Future<void> _confirmRemoveAll(BuildContext context, AdminFloorPlanVersion draft) async {
         final confirmed = await showDialog<bool>(context: context, builder: (context) => AlertDialog(
             title: const Text('Remove all seats?'),
@@ -229,4 +252,36 @@ class _FloorPlanAdminScreenState extends State<FloorPlanAdminScreen> {
 
     static String _detail(DioException failure) => failure.error is Problem
         ? (failure.error as Problem).detail : 'The request failed. Check your connection and retry.';
+}
+
+class _PublicationCard extends StatelessWidget {
+    const _PublicationCard({required this.timing, required this.published});
+    final FloorPlanPublicationTiming timing;
+    final bool published;
+    @override
+    Widget build(BuildContext context) => Card(child: ListTile(
+        leading: Icon(timing.immediate ? Icons.bolt : Icons.schedule),
+        title: Text(published ? 'Publication result' : 'Publication timing'),
+        subtitle: Text(_publicationMessage(timing, published: published)),
+    ));
+}
+
+String _publicationMessage(FloorPlanPublicationTiming timing, {required bool published}) {
+    final dates = timing.targetDates.isEmpty ? '' : ' (${timing.targetDates.first.day}.'
+        '${timing.targetDates.first.month}.–${timing.targetDates.last.day}.${timing.targetDates.last.month}.)';
+    if (timing.immediate) {
+        return '${published ? 'The floor plan now applies' : 'The floor plan will apply immediately'} to the '
+            'current bidding round$dates. Its ${timing.draftSeatCapacity} seats match the round capacity, so bids, '
+            'winner selection, reservations, and token accounting do not change.';
+    }
+    final reason = switch (timing.reason) {
+        'CAPACITY_CHANGED' => 'Its ${timing.draftSeatCapacity} seats do not match the current round capacity '
+            '${timing.currentRoundCapacity ?? '—'}.',
+        'CUTOFF_REACHED' => 'The current round cutoff has passed.',
+        'ROUND_ALREADY_USES_FLOOR_PLAN' => 'The current round already uses a floor plan.',
+        'PENDING_CHANGE' => 'Another floor-plan change is already pending.',
+        _ => 'There is no eligible open configuration-only round.',
+    };
+    return '${published ? 'The floor plan was scheduled' : 'The floor plan will be scheduled'} for the next '
+        'successor round. $reason';
 }

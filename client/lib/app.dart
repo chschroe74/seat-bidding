@@ -158,6 +158,18 @@ class _AppShellState extends State<AppShell> {
     @override
     void initState() {
         super.initState();
+        _refreshFloorPlan();
+    }
+
+    @override
+    void didUpdateWidget(covariant AppShell oldWidget) {
+        super.didUpdateWidget(oldWidget);
+        if (oldWidget.location != widget.location || oldWidget.api != widget.api) {
+            _refreshFloorPlan();
+        }
+    }
+
+    void _refreshFloorPlan() {
         widget.api?.currentFloorPlan().then((value) {
             if (mounted) setState(() => hasFloorPlan = value != null);
         }, onError: (Object _, StackTrace stackTrace) {});

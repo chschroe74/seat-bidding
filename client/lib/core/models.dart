@@ -317,9 +317,31 @@ class AdminFloorPlanVersion {
     );
 }
 
+class FloorPlanPublicationTiming {
+    const FloorPlanPublicationTiming({required this.mode, required this.targetDates,
+        required this.draftSeatCapacity, required this.reason, this.effectiveRoundId, this.currentRoundCapacity});
+    final String mode;
+    final int? effectiveRoundId;
+    final List<DateTime> targetDates;
+    final int? currentRoundCapacity;
+    final int draftSeatCapacity;
+    final String reason;
+    bool get immediate => mode == 'CURRENT_OPEN_ROUND';
+    factory FloorPlanPublicationTiming.fromJson(Map<String, dynamic> json) => FloorPlanPublicationTiming(
+        mode: json['mode'] as String,
+        effectiveRoundId: json['effectiveRoundId'] as int?,
+        targetDates: (json['effectiveTargetDates'] as List? ?? const [])
+            .map((value) => DateTime.parse(value as String)).toList(),
+        currentRoundCapacity: json['currentRoundCapacity'] as int?,
+        draftSeatCapacity: json['draftSeatCapacity'] as int,
+        reason: json['reason'] as String,
+    );
+}
+
 class AdminFloorPlan {
     const AdminFloorPlan({required this.stateRevision, required this.watermark, required this.pendingDeactivation,
-        this.activeVersion, this.pendingVersion, this.draft, this.warnings = const []});
+        this.activeVersion, this.pendingVersion, this.draft, this.warnings = const [],
+        this.publicationPreview, this.publicationEffect});
     final int stateRevision;
     final int watermark;
     final bool pendingDeactivation;
@@ -327,6 +349,8 @@ class AdminFloorPlan {
     final AdminFloorPlanVersion? pendingVersion;
     final AdminFloorPlanVersion? draft;
     final List<String> warnings;
+    final FloorPlanPublicationTiming? publicationPreview;
+    final FloorPlanPublicationTiming? publicationEffect;
     factory AdminFloorPlan.fromJson(Map<String, dynamic> json) => AdminFloorPlan(
         stateRevision: json['stateRevision'] as int,
         watermark: json['permanentNumberWatermark'] as int,
@@ -338,6 +362,10 @@ class AdminFloorPlan {
         draft: json['draft'] == null ? null :
             AdminFloorPlanVersion.fromJson(json['draft'] as Map<String, dynamic>),
         warnings: (json['warnings'] as List? ?? const []).cast<String>(),
+        publicationPreview: json['publicationPreview'] == null ? null : FloorPlanPublicationTiming.fromJson(
+            json['publicationPreview'] as Map<String, dynamic>),
+        publicationEffect: json['publicationEffect'] == null ? null : FloorPlanPublicationTiming.fromJson(
+            json['publicationEffect'] as Map<String, dynamic>),
     );
 }
 

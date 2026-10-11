@@ -25,7 +25,7 @@ class HelpScreen extends StatelessWidget {
             ),
             _Help(
                 'Floor plans and seat preferences',
-                'When the current round has a floor plan, its numbered active seats replace the configured seat capacity. Bids still compete for a seat on a date, never for a particular seat. You may rate any number of seats with one or two stars and one preferred seat with three stars. Zero stars means least preferred, not forbidden, so any active seat can still be assigned. Preferences belong to your profile, remain private, and can be changed at any time; a change recorded after cutoff applies only to later rounds. Pair members receive the same physical seat, and each person’s rating is considered in placement.',
+                'When the current round has a floor plan, its numbered active seats replace the configured seat capacity. An administrator may activate a plan immediately before cutoff when its seat count matches a configuration-only round; this adds physical placement without changing existing bids, reservations, winner selection, or token accounting. Other plan changes start with a later round. Bids still compete for a seat on a date, never for a particular seat. You may rate any number of seats with one or two stars and one preferred seat with three stars. Zero stars means least preferred, not forbidden, so any active seat can still be assigned. Preferences belong to your profile, remain private, and can be changed at any time; a change recorded after cutoff applies only to later rounds. Pair members receive the same physical seat, and each person’s rating is considered in placement.',
             ),
             _Help(
                 'Floor-plan privacy',

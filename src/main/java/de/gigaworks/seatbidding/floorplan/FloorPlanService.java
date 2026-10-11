@@ -9,6 +9,7 @@ import de.gigaworks.seatbidding.dto.ReplaceSeatPreferencesRequest;
 import de.gigaworks.seatbidding.dto.RevisionRequest;
 import de.gigaworks.seatbidding.exception.ApplicationProblem;
 import de.gigaworks.seatbidding.persistence.BiddingRoundRepository;
+import de.gigaworks.seatbidding.persistence.CapacitySource;
 import de.gigaworks.seatbidding.persistence.EmployeeSeatPreferenceEntity;
 import de.gigaworks.seatbidding.persistence.EmployeeRepository;
 import de.gigaworks.seatbidding.persistence.EmployeeSeatPreferenceRepository;
@@ -24,6 +25,7 @@ import de.gigaworks.seatbidding.persistence.FloorPlanVersionSeatRepository;
 import de.gigaworks.seatbidding.persistence.FloorPlanVersionStatus;
 import de.gigaworks.seatbidding.persistence.PhysicalSeatEntity;
 import de.gigaworks.seatbidding.persistence.PhysicalSeatRepository;
+import de.gigaworks.seatbidding.persistence.RoundDateRepository;
 import de.gigaworks.seatbidding.persistence.SeatReservationRepository;
 import de.gigaworks.seatbidding.round.SeatBiddingConfiguration;
 
@@ -49,16 +51,18 @@ public class FloorPlanService {
     @Inject EmployeeRepository employees;
     @Inject EmployeeSeatPreferenceRepository preferences;
     @Inject BiddingRoundRepository rounds;
+    @Inject RoundDateRepository roundDates;
     @Inject SeatBiddingConfiguration configuration;
     @Inject SeatReservationRepository reservations;
     @Inject SvgSanitizer sanitizer;
+    @Inject FloorPlanPublicationPolicy publicationPolicy;
     @Inject Clock clock;
 
     @Transactional
     public AdminFloorPlanResponse adminState() {
         identity.requireCurrentAdmin();
         return plans.findSingleton().map(this::adminResponse)
-                .orElse(new AdminFloorPlanResponse(0, 0, null, null, false, null, List.of()));
+                .orElse(new AdminFloorPlanResponse(0, 0, null, null, false, null, List.of(), null, null));
     }
 
     @Transactional
@@ -223,6 +227,7 @@ public class FloorPlanService {
     @Transactional
     public AdminFloorPlanResponse publish(RevisionRequest request) {
         identity.requireCurrentAdmin();
+        var round = lockVisibleOpenRound();
         var plan = requirePlanForUpdate();
         if (plan.pendingVersion != null || plan.pendingDeactivation) {
             throw ApplicationProblem.conflict("FLOOR_PLAN_CHANGE_PENDING", "A floor-plan change is pending",
@@ -236,10 +241,12 @@ public class FloorPlanService {
                     "Add at least one active seat before publishing.");
         }
         validateFutureReservations(active.size());
+        var publishedAt = clock.instant();
+        var decision = publicationPolicy.decide(round, active.size(), publishedAt);
         plan.permanentNumberWatermark = Math.max(plan.permanentNumberWatermark,
                 active.stream().mapToInt(value -> value.seatNumber).max().orElse(0));
         draft.status = FloorPlanVersionStatus.PUBLISHED;
-        draft.publishedAt = clock.instant();
+        draft.publishedAt = publishedAt;
         for (var marker : markers.findForVersion(draft.id)) {
             if (marker.state == FloorPlanSeatState.ACTIVE && marker.physicalSeat.firstPublishedVersion == null) {
                 marker.physicalSeat.firstPublishedVersion = draft;
@@ -249,9 +256,16 @@ public class FloorPlanService {
                 markers.delete(marker);
             }
         }
-        plan.pendingVersion = draft;
+        if (decision.immediate()) {
+            plan.activeVersion = draft;
+            round.capacitySource = CapacitySource.FLOOR_PLAN;
+            round.floorPlanVersion = draft;
+        }
+        else {
+            plan.pendingVersion = draft;
+        }
         plan.stateRevision++;
-        return adminResponse(plan);
+        return adminResponse(plan, List.of(), publicationTiming(decision, round, active.size()));
     }
 
     @Transactional
@@ -281,6 +295,7 @@ public class FloorPlanService {
             throw ApplicationProblem.badRequest("CONFIRMATION_REQUIRED", "Confirmation required",
                     "Floor-plan deactivation must be explicitly confirmed.");
         }
+        lockVisibleOpenRound();
         var plan = requirePlanForUpdate();
         if (plan.pendingDeactivation) {
             return adminResponse(plan);
@@ -417,13 +432,46 @@ public class FloorPlanService {
     }
 
     private AdminFloorPlanResponse adminResponse(FloorPlanEntity plan) {
-        return adminResponse(plan, List.of());
+        return adminResponse(plan, List.of(), null);
     }
 
     private AdminFloorPlanResponse adminResponse(FloorPlanEntity plan, List<String> warnings) {
+        return adminResponse(plan, warnings, null);
+    }
+
+    private AdminFloorPlanResponse adminResponse(FloorPlanEntity plan, List<String> warnings,
+            AdminFloorPlanResponse.PublicationTiming publicationEffect) {
         return new AdminFloorPlanResponse(plan.stateRevision, plan.permanentNumberWatermark,
                 adminVersion(plan.activeVersion), adminVersion(plan.pendingVersion), plan.pendingDeactivation,
-                versions.findDraft(plan.id).map(this::adminVersion).orElse(null), warnings);
+                versions.findDraft(plan.id).map(this::adminVersion).orElse(null), warnings,
+                publicationPreview(plan), publicationEffect);
+    }
+
+    private AdminFloorPlanResponse.PublicationTiming publicationPreview(FloorPlanEntity plan) {
+        var draft = versions.findDraft(plan.id).orElse(null);
+        if (draft == null) {
+            return null;
+        }
+        int capacity = markers.findActiveForVersion(draft.id).size();
+        if (plan.pendingVersion != null || plan.pendingDeactivation) {
+            return new AdminFloorPlanResponse.PublicationTiming("NEXT_SUCCESSOR_ROUND", null, List.of(),
+                    rounds.findOpen().map(value -> value.seatCapacity).orElse(null), capacity, "PENDING_CHANGE");
+        }
+        var round = rounds.findOpen().orElse(null);
+        return publicationTiming(publicationPolicy.decide(round, capacity, clock.instant()), round, capacity);
+    }
+
+    private AdminFloorPlanResponse.PublicationTiming publicationTiming(FloorPlanPublicationPolicy.Decision decision,
+            de.gigaworks.seatbidding.persistence.BiddingRoundEntity round, int draftCapacity) {
+        boolean immediate = decision.immediate() && round != null;
+        return new AdminFloorPlanResponse.PublicationTiming(decision.mode(), immediate ? round.id : null,
+                immediate ? roundDates.findForRound(round.id).stream().map(value -> value.targetDate).toList()
+                        : List.of(),
+                round == null ? null : round.seatCapacity, draftCapacity, decision.reason());
+    }
+
+    private de.gigaworks.seatbidding.persistence.BiddingRoundEntity lockVisibleOpenRound() {
+        return rounds.findOpen().flatMap(value -> rounds.findByIdForUpdate(value.id)).orElse(null);
     }
 
     private static List<String> uploadWarnings(FloorPlanVersionEntity draft, SvgSanitizer.SanitizedSvg replacement) {

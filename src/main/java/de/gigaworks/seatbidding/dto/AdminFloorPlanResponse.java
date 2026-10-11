@@ -1,10 +1,12 @@
 package de.gigaworks.seatbidding.dto;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
 
 public record AdminFloorPlanResponse(long stateRevision, int permanentNumberWatermark, Version activeVersion,
-        Version pendingVersion, boolean pendingDeactivation, Version draft, List<String> warnings) {
+        Version pendingVersion, boolean pendingDeactivation, Version draft, List<String> warnings,
+        PublicationTiming publicationPreview, PublicationTiming publicationEffect) {
 
     public record Version(long id, long versionNumber, String status, long draftRevision, String svgUrl,
             FloorPlanResponse.ViewBox viewBox, List<Seat> seats) {
@@ -12,5 +14,9 @@ public record AdminFloorPlanResponse(long stateRevision, int permanentNumberWate
 
     public record Seat(long id, int number, BigDecimal normalizedX, BigDecimal normalizedY, boolean inherited,
             String state) {
+    }
+
+    public record PublicationTiming(String mode, Long effectiveRoundId, List<LocalDate> effectiveTargetDates,
+            Integer currentRoundCapacity, int draftSeatCapacity, String reason) {
     }
 }
