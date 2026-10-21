@@ -59,6 +59,38 @@ void main() {
     },
   );
 
+  testWidgets('reservation calendar always starts its week on Monday', (
+    tester,
+  ) async {
+    final auth = _auth(admin: true);
+    final api = _FakeApi(auth);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 1000,
+            child: SeatReservationAdminGate(
+              auth: auth,
+              api: api,
+              isWeb: true,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Choose date'));
+    await tester.pumpAndSettle();
+
+    final dialogContext = tester.element(find.byType(DatePickerDialog));
+    expect(
+      MaterialLocalizations.of(dialogContext).firstDayOfWeekIndex,
+      DateTime.monday % DateTime.daysPerWeek,
+    );
+    expect(find.text('Cancel'), findsOneWidget);
+  });
+
   testWidgets('compact web and native clients never load management controls', (
     tester,
   ) async {

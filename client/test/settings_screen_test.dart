@@ -58,7 +58,7 @@ void main() {
         );
         await tester.pumpAndSettle();
 
-        expect(find.text('Version 1.4.0'), findsOneWidget);
+        expect(find.text('Version 1.4.1'), findsOneWidget);
         expect(find.textContaining('+2'), findsNothing);
     });
 

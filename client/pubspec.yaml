@@ -1,7 +1,7 @@
 name: seat_bidding
 description: Accessible office seat bidding PWA
 publish_to: none
-version: 1.4.0+3
+version: 1.4.1+4
 
 environment:
   sdk: '>=3.8.0 <4.0.0'

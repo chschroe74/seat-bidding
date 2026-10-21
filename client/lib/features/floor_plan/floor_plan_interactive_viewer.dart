@@ -3,9 +3,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 class FloorPlanInteractiveViewer extends StatefulWidget {
-    const FloorPlanInteractiveViewer({super.key, required this.child});
+    const FloorPlanInteractiveViewer({
+        super.key,
+        required this.child,
+        this.controller,
+        this.panEnabled = true,
+    });
 
     final Widget child;
+    final TransformationController? controller;
+    final bool panEnabled;
 
     @override
     State<FloorPlanInteractiveViewer> createState() => _FloorPlanInteractiveViewerState();
@@ -13,6 +20,7 @@ class FloorPlanInteractiveViewer extends StatefulWidget {
 
 class _FloorPlanInteractiveViewerState extends State<FloorPlanInteractiveViewer> {
     late final TransformationController transformationController;
+    late final bool ownsTransformationController;
     bool controlPressed = false;
     bool mouseInside = false;
     bool touchActive = false;
@@ -22,7 +30,8 @@ class _FloorPlanInteractiveViewerState extends State<FloorPlanInteractiveViewer>
     @override
     void initState() {
         super.initState();
-        transformationController = TransformationController();
+        ownsTransformationController = widget.controller == null;
+        transformationController = widget.controller ?? TransformationController();
         transformationController.addListener(_keepPlanVisible);
         controlPressed = HardwareKeyboard.instance.isControlPressed;
         HardwareKeyboard.instance.addHandler(_handleKeyEvent);
@@ -32,7 +41,7 @@ class _FloorPlanInteractiveViewerState extends State<FloorPlanInteractiveViewer>
     void dispose() {
         HardwareKeyboard.instance.removeHandler(_handleKeyEvent);
         transformationController.removeListener(_keepPlanVisible);
-        transformationController.dispose();
+        if (ownsTransformationController) transformationController.dispose();
         super.dispose();
     }
 
@@ -94,6 +103,7 @@ class _FloorPlanInteractiveViewerState extends State<FloorPlanInteractiveViewer>
                             maxScale: 6,
                             scaleFactor: 800,
                             boundaryMargin: const EdgeInsets.all(double.infinity),
+                            panEnabled: widget.panEnabled,
                             scaleEnabled: allowScale,
                             trackpadScrollCausesScale: mouseInside && controlPressed,
                             child: widget.child,

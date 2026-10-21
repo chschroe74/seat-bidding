@@ -335,6 +335,11 @@ class _SeatReservationsScreenState extends State<SeatReservationsScreen> {
       initialDate: DateTime.tryParse(date.text) ?? DateTime.now(),
       firstDate: DateTime.now(),
       lastDate: DateTime.now().add(const Duration(days: 3650)),
+      builder: (context, child) => Localizations.override(
+        context: context,
+        delegates: const [_MondayFirstMaterialLocalizationsDelegate()],
+        child: child!,
+      ),
     );
     if (selected != null) date.text = _format(selected);
   }
@@ -363,6 +368,28 @@ class _SeatReservationsScreenState extends State<SeatReservationsScreen> {
       : 'The request failed. Check your connection and retry.';
   static String _format(DateTime value) =>
       DateFormat('yyyy-MM-dd').format(value);
+}
+
+class _MondayFirstMaterialLocalizations extends DefaultMaterialLocalizations {
+  const _MondayFirstMaterialLocalizations();
+
+  @override
+  int get firstDayOfWeekIndex => DateTime.monday % DateTime.daysPerWeek;
+}
+
+class _MondayFirstMaterialLocalizationsDelegate
+    extends LocalizationsDelegate<MaterialLocalizations> {
+  const _MondayFirstMaterialLocalizationsDelegate();
+
+  @override
+  bool isSupported(Locale locale) => true;
+
+  @override
+  Future<MaterialLocalizations> load(Locale locale) =>
+      SynchronousFuture(const _MondayFirstMaterialLocalizations());
+
+  @override
+  bool shouldReload(_MondayFirstMaterialLocalizationsDelegate old) => false;
 }
 
 class _ReservationCard extends StatelessWidget {

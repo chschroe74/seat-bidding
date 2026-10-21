@@ -1,7 +1,7 @@
 # Office Seat Bidding Application — Implementation Specification
 
 **Status:** Approved implementation specification  
-**Target release:** Version 1.4
+**Target release:** Version 1.4.1
 **Primary client:** Flutter Progressive Web App (PWA)  
 **Optional client:** Native Flutter Android application  
 **Backend:** Java 25, Quarkus, PostgreSQL, Hibernate ORM with Panache, Liquibase, application-managed authentication, Quarkus Scheduler, standards-based Web Push, Jib
@@ -10,11 +10,11 @@
 
 The application distributes a limited number of office seats fairly among employees. Employees receive tokens for each bidding round and privately bid for individual weekdays, optionally indicating morning-only or afternoon-only attendance. Administrators may reserve physical seats before allocation, and employees see those reservations while deciding their bids. In floor-plan mode, administrators also maintain guest-only seat ratings; anonymous reserved guest seats are selected only after every successful employee unit has received its physical seat. Administrators may optionally publish a sanitized SVG floor plan with numbered physical-seat markers; employees may privately rate those seats, and successful allocation units then receive specific physical seats through a globally solved, strictly token-prioritised placement step that uses seat ratings only after attendance winners are fixed. Opted-in employees may register one or more web-capable devices and receive daily reminders until they place a positive bid or suppress reminders for the current round. At cutoff, the backend subtracts reservations from capacity, forms complementary half-day sharing pairs, ranks full-day employees, unpaired half-day employees, and half-day pairs as allocation units, resolves capacity-boundary ties globally across the round using fairness-aware allocation, places successful units on physical seats when floor-plan mode applies, publishes assignments, deducts only successful individual bids, and opens the next round.
 
-This document is the authoritative version 1.4 implementation contract. Requirements marked **MUST**, **SHOULD**, and **MAY** have their conventional meanings.
+This document is the authoritative version 1.4.1 implementation contract. Requirements marked **MUST**, **SHOULD**, and **MAY** have their conventional meanings.
 
 ## 2. Scope
 
-### 2.1 Version 1.4 goals
+### 2.1 Version 1.4.1 goals
 
 - Support one office and one shared seat capacity for every weekday, derived either from configuration or from the active seats in an immutable round-snapshotted floor-plan version.
 - Run one weekly round covering Monday through Friday.
@@ -34,7 +34,7 @@ This document is the authoritative version 1.4 implementation contract. Requirem
 - Serve the compiled Flutter PWA and REST API from one Quarkus application image.
 - Optionally distribute a native Android client using the same API.
 
-### 2.2 Explicitly out of scope for version 1.4
+### 2.2 Explicitly out of scope for version 1.4.1
 
 - Administrative functions other than dated seat reservations, floor-plan management, and guest-seat preferences, including employee provisioning and administrator-role management.
 - Public-holiday and office-closure handling.
@@ -120,7 +120,7 @@ The configured floor-plan maximum MUST be at least every active/pending version'
 
 - An employee may bid once per target date; a submission replaces the employee's complete five-date bid set atomically.
 - Every positive bid stores one attendance period: `FULL_DAY`, `MORNING_ONLY`, or `AFTERNOON_ONLY`.
-- `FULL_DAY` is the independent default for every date. For compatibility with deployed version 1.3 clients, an omitted period on a positive bid is interpreted as `FULL_DAY`; version 1.4 clients always send it explicitly.
+- `FULL_DAY` is the independent default for every date. For compatibility with deployed version 1.3 clients, an omitted period on a positive bid is interpreted as `FULL_DAY`; version 1.4.1 clients always send it explicitly.
 - Bids may be replaced any number of times while the round is `OPEN` and before its cutoff instant.
 - Zero is equivalent to no bid and MUST be removed or omitted in persistence. A no-bid date has no persisted period and starts as `FULL_DAY` in a new draft.
 - Negative, fractional, duplicate-date, out-of-round, weekend, or over-budget bids are invalid.
@@ -194,7 +194,7 @@ When multiple complete allocations are equivalent under all three objectives, us
 
 The selected solution and its round-level random audit value are persisted in the processing transaction. A retry after rollback may select a different equally optimal solution because no result committed; a `COMPLETED` round MUST never be redrawn, recalculated, or changed.
 
-`algorithm_version` MUST identify reservation-aware capacity, half-day unit construction/pairing, boundary-fairness semantics, and the version 1.4 strict token-priority physical-seat placement policy (including pair satisfaction and preference-independent equal-score priority draws) when floor-plan mode applies. Version 1.4 rounds use the appropriate configuration-only or floor-plan-aware algorithm version; historical rounds retain their original versions and results.
+`algorithm_version` MUST identify reservation-aware capacity, half-day unit construction/pairing, boundary-fairness semantics, and the version 1.4.1 strict token-priority physical-seat placement policy (including pair satisfaction and preference-independent equal-score priority draws) when floor-plan mode applies. Version 1.4.1 rounds use the appropriate configuration-only or floor-plan-aware algorithm version; historical rounds retain their original versions and results.
 
 Published ranking places successful units above the capacity boundary and unsuccessful units below it. Pair members are adjacent in one visual group at one unit rank, with morning before afternoon; each member shows their individual bid. In floor-plan mode every successful unit additionally receives one physical seat after winner selection, both pair members share it, and only the current employee may receive its number through the API.
 
@@ -269,7 +269,7 @@ After section 5.5 has fixed all successful and unsuccessful units, independently
 9. Persist the selected physical seat on every successful employee unit and the guest-selected seat IDs separately; include the canonical priority order, employee satisfaction keys, employee preference input revisions/fingerprint, guest rating revision and guest selection in the audit. Enforce that no seat is assigned more than once for a target date across employees and guests. Unsuccessful units and configuration-only rounds have no physical seat.
 10. Placement is per target date. An employee may receive different seat numbers on different dates; no separate random weekly priority balancing or cross-day seat-stability objective is applied. The existing finite weekly token budget already lets employees concentrate priority on fewer attendance days.
 
-**Incentives and scope:** Physical-seat preferences are rankings, not feasibility constraints, and there are no hidden points for the number or level of rated alternatives. Lowering an alternative seat's rating cannot raise a `SINGLE` unit's token priority or displace a higher-priority unit; providing truthful alternatives allows the optimiser to exploit genuinely equivalent options. A `HALF_DAY_PAIR` is a shared unit rather than two independent choosers: optimising its sorted pair key can still permit strategic preference reporting by an individual pair member. This residual risk is explicitly accepted for version 1.4 in exchange for a symmetric, preference-sensitive compromise. Do not claim that the pair mechanism is individually strategy-proof.
+**Incentives and scope:** Physical-seat preferences are rankings, not feasibility constraints, and there are no hidden points for the number or level of rated alternatives. Lowering an alternative seat's rating cannot raise a `SINGLE` unit's token priority or displace a higher-priority unit; providing truthful alternatives allows the optimiser to exploit genuinely equivalent options. A `HALF_DAY_PAIR` is a shared unit rather than two independent choosers: optimising its sorted pair key can still permit strategic preference reporting by an individual pair member. This residual risk is explicitly accepted for version 1.4.1 in exchange for a symmetric, preference-sensitive compromise. Do not claim that the pair mechanism is individually strategy-proof.
 
 ## 6. Round lifecycle and scheduler
 
@@ -820,17 +820,17 @@ Use explicit entities/repositories for bids with periods, reservations, logical/
   1. `db/changelog/db.changelog-changes.yaml` for versioned database changes;
   2. `db/changelog/grant-permissions.yaml` for runtime-role permissions.
 - `db/changelog/db.changelog-changes.yaml` is the second-level aggregate changelog. It includes ordered change files from `db/changelog/changes/`; the deployed changelog begins with `changes/001-initial-schema.yaml`. Future versioned schema or data changes are added as new, sequentially named files and included from this aggregate rather than directly from the master changelog.
-- All version 1.2 and deployed version 1.3 changesets are immutable. The deployed version 1.3 history already contains the half-day/allocation-unit work followed by the Web Push work; version 1.4 MUST NOT edit, reorder, relabel, or reproduce those changesets.
-- Append one or more newly numbered version 1.4 change files to add floor-plan/version/seat tables, employee and guest preference revisions/items, anonymous reserved-guest seat assignments, round capacity-source/floor-plan references, physical-seat placement, and extended audit data. Apply them in safe stages: add nullable/defaulted structures, backfill and validate existing data, then enforce new constraints.
+- All version 1.2 and deployed version 1.3 changesets are immutable. The deployed version 1.3 history already contains the half-day/allocation-unit work followed by the Web Push work; version 1.4.1 MUST NOT edit, reorder, relabel, or reproduce those changesets.
+- Append one or more newly numbered version 1.4.1 change files to add floor-plan/version/seat tables, employee and guest preference revisions/items, anonymous reserved-guest seat assignments, round capacity-source/floor-plan references, physical-seat placement, and extended audit data. Apply them in safe stages: add nullable/defaulted structures, backfill and validate existing data, then enforce new constraints.
 - Every existing round is backfilled with `capacity_source = CONFIGURATION`, a null floor-plan version, and unchanged `seat_capacity`. Existing allocation units retain null physical seats. Existing completed results, ledgers, reservations, assignment order, fingerprints, audit/algorithm versions, and notification data are never recalculated or labeled floor-plan-aware. No floor plan, seat, preference, or placement row is synthesized.
 - Immediate activation is runtime behavior, not migration-time synthesis. Deployment and Liquibase MUST NOT attach a floor plan to an existing round; only a later authenticated publication transaction may convert an eligible open configuration-only round.
-- Any legacy ranking/audit columns needed to explain deployed history remain read-only. Version 1.4 floor-plan writes use the normalized immutable version/seat/preference model.
+- Any legacy ranking/audit columns needed to explain deployed history remain read-only. Version 1.4.1 floor-plan writes use the normalized immutable version/seat/preference model.
 - `db/changelog/grant-permissions.yaml` contains the separate `set-permissions` changeset with `runAlways: true`. It runs after all versioned changes and executes `db/sql/grant-permissions.sql` as one PostgreSQL block with statement splitting disabled and comments retained. The SQL grants `SELECT`, `INSERT`, `UPDATE`, and `DELETE` on every non-Liquibase table in the `public` schema and `USAGE` on every sequence in that schema to the role supplied through the Liquibase `${applicationUser}` change-log parameter. The migrator must have authority to issue those grants.
 - The Quarkus Liquibase configuration MUST point to `db/changelog/db.changelog-master.yaml` and provide `applicationUser` from the configured application database username. Permission application therefore covers newly created tables and sequences on every migration run without mixing permission logic into individual versioned change files.
 - A separate idempotent application bootstrap mechanism creates the first bidding round; environment-specific employees and runtime round data MUST NOT be inserted by production changelogs.
 - Provide rollback blocks where safe. Every changeset applied to any deployed environment is immutable: its identifier, author, path, and contents MUST remain stable, and subsequent changes are always appended through newly numbered change files.
 - Quarkus runs Liquibase at application startup. Production deployment MUST ensure only one migrator runs; this follows naturally from the current release's single-instance topology.
-- Integration tests MUST both (a) start from an empty PostgreSQL database and apply the complete master changelog through both include levels and (b) upgrade a representative deployed version 1.3 database through every new version 1.4 migration. Tests verify the resulting schema, preserved/backfilled data, permanent-number and partial-unique constraints, and permission changes.
+- Integration tests MUST both (a) start from an empty PostgreSQL database and apply the complete master changelog through both include levels and (b) upgrade a representative deployed version 1.3 database through every new version 1.4.1 migration. Tests verify the resulting schema, preserved/backfilled data, permanent-number and partial-unique constraints, and permission changes.
 
 ## 11. REST API
 
@@ -1246,7 +1246,7 @@ Semantics:
 
 - `roundId` prevents a stale page from writing into a successor round.
 - The array represents the complete replacement set; omitted/zero dates become no bid.
-- Each positive entry includes one valid attendance period. A deployed version 1.3 client's omission remains interpreted as `FULL_DAY`; unknown/null values from a version 1.4 client are rejected.
+- Each positive entry includes one valid attendance period. A deployed version 1.3 client's omission remains interpreted as `FULL_DAY`; unknown/null values from a version 1.4.1 client are rejected.
 - On success return `200` with the same authoritative shape as `GET /api/bidding/current`.
 - Bidding endpoints never accept an email, employee ID, balance, allocation result, or token-spend decision from the client; the acting employee always comes from Quarkus `SecurityIdentity`.
 
@@ -1615,7 +1615,7 @@ This page exists only in the desktop/wide PWA and only when `/api/me` reports `i
 
 The page provides:
 
-- an accessible date picker with manual `YYYY-MM-DD` entry fallback;
+- an accessible date picker whose calendar week begins on **Monday** (German/ISO weekday ordering, Monday through Sunday), regardless of browser/system locale, with manual `YYYY-MM-DD` entry fallback; the weekday header, month navigation and selected date MUST remain correct across month/year boundaries;
 - a positive whole-number reserved-seat field that displays the applicable physical capacity;
 - an optional description field limited to 500 Unicode code points with a clear warning that the text will be visible to all authenticated users;
 - an **Add reservation** action;
@@ -1637,6 +1637,7 @@ The page provides:
 - a compact seat-list overlay card over the map, sized to its contents up to the available map height, movable by dragging its header, and collapsible to that header; it contains selection, coordinate-move, and direct remove/restore controls while preserving inherited-seat retirement and provisional-seat renumbering rules;
 - marker selection that preserves the current pan/zoom transformation and can be cleared by selecting the marker again or by an explicit clear-selection control;
 - a deliberate add-seat mode in which clicking/tapping the plan creates one draft-new marker at the transformed normalized coordinate;
+- visible pointer-following horizontal and vertical crosshair alignment guides in add-seat and marker-drag modes, plus temporary Ctrl-to-snap alignment as specified below;
 - dragging or keyboard/list coordinate adjustment to move any marker without changing its number;
 - removal of inherited or draft-new markers, visible distinction between permanent and provisional numbers, restoration of inherited pending removals, and immediate display of provisional renumbering;
 - changed-view-box/dimension/aspect warnings requiring review but never automatically clearing seats;
@@ -1644,6 +1645,17 @@ The page provides:
 - confirmed **Remove all existing seats**, **Discard draft**, **Publish floor plan**, and **Delete floor plan** actions with precise permanent-number and effective-round consequences;
 - an accessible marker list ordered by number that supports every operation without relying on spatial clicking;
 - loading, no-plan, draft, pending publication/deactivation, validation, `403`, `409`, retryable failure, and successful-state feedback.
+
+**Visual alignment and snapping (desktop pointer editor):**
+
+1. In add-seat mode, a thin horizontal and vertical crosshair crosses the live candidate seat-marker centre and tracks the pointer whenever the pointer is inside the editable plan viewport. When dragging an existing marker, the same guides cross its live candidate centre. Crosshair styling MUST remain distinguishable from floor-plan drawing content and seat labels, and MUST NOT intercept hit testing. Guides disappear when the pointer leaves the editable surface, the drag ends, or the editor leaves an applicable mode. They are purely visual and never saved into the SVG or marker data.
+2. Free placement/dragging is the default. Holding the **Control (Ctrl)** modifier during pointer movement enables *temporary* snapping. This does not change the existing **Ctrl + mouse-wheel zoom** gesture; Ctrl snapping applies only to pointer-driven marker placement and drag movement, while Ctrl+wheel continues to zoom. Releasing Ctrl immediately restores the unsnapped pointer-derived position (without a positional jump caused by a stale snap offset), unless the user has already committed the placement. The modifier is observed continuously during the gesture; it is not a persistent toggle.
+3. Snap independently on the `x` and `y` axes to the **centres** of other currently active draft markers. For an x-axis snap, compare the candidate's screen-space horizontal coordinate with each eligible existing marker's horizontal coordinate; for a y-axis snap, compare their vertical coordinates. Choose the nearest eligible coordinate within the capture threshold separately for each axis. These references MAY come from different markers; when both axes qualify, snap both coordinates to allow intersections/rectangles. Exclude the marker being dragged, removed markers, and any unpublished marker not currently active in the draft. On an exact distance tie, use the smaller seat number, then stable marker ID, for deterministic visual feedback.
+4. Capture threshold is based on the **rendered marker bubble's radius** in screen pixels, inclusive of its visible extent, with a minimum usable target of 8 CSS pixels. Compute distances and threshold after the current pan/zoom transformation so interaction sensitivity remains consistent across zoom levels. Display the active snapped guide(s) distinctively while Ctrl is held. Do not snap to underlying SVG graphics, lines, table edges, or the pointer itself—only existing marker centres.
+5. Snapping is *soft*: an axis remains snapped only while the raw pointer-derived coordinate stays within its capture threshold of the reference coordinate. Continuing to move beyond that range breaks the snap even if Ctrl is still pressed; after leaving the range, motion follows the pointer again. A user can always bypass snapping by releasing Ctrl. Re-entry into an eligible range may reacquire a snap. Do not introduce a magnetic drag lock that prevents the user moving through or out of the region.
+6. The live preview and crosshair use the effective candidate coordinates, but pointer hit testing and release calculations use the raw pointer location. On click-to-add or drag-release, commit exactly the previewed effective candidate position, clamped to the valid plan area and transformed to existing normalised coordinate storage. A discarded/cancelled drag commits nothing; the editor MUST NOT create duplicate markers or move another marker accidentally because a snap target overlaps the candidate.
+7. Touch interaction, keyboard/list coordinate editing, and screen-reader-accessible marker operations remain fully usable without Ctrl or a hover pointer. Snapping is an optional desktop-pointer aid, not a requirement for precision placement or an implicit change to keyboard movement. The UI SHOULD include a short hint such as **Hold Ctrl to align with existing seats**; platform implementations MAY also support the primary-command modifier on macOS, but Ctrl MUST work on desktop platforms where it is the standard Control key.
+
 
 The first draft starts empty. Later uploads preserve existing markers unless **Remove all existing seats** is used. Publish remains disabled for zero active seats or invalid numbering/reservation state. The client treats its preview as advisory and displays the authoritative effect returned by publication; it never asks the administrator to select or override the mode. Deletion is described as disabling floor-plan mode for future rounds while retaining history, not erasing completed assignments. Upload and draft mutation never change the open round; only a confirmed, eligible equal-capacity publication may do so.
 
@@ -1704,13 +1716,13 @@ When the PWA detects an Android browser, it MAY show **Get the Android app** in 
 
 ## 14. Web Push delivery
 
-Version 1.4 retains the deployed standards-based Web Push reminders for installed iPhone/iPad Home Screen web apps, compatible Android browsers/PWAs, and compatible desktop browsers. They do not depend on the optional native Android application, local device alarms, an open browser tab, or a continuously running Flutter process.
+Version 1.4.1 retains the deployed standards-based Web Push reminders for installed iPhone/iPad Home Screen web apps, compatible Android browsers/PWAs, and compatible desktop browsers. They do not depend on the optional native Android application, local device alarms, an open browser tab, or a continuously running Flutter process.
 
 The backend signs requests with configured VAPID credentials and encrypts each payload for the target subscription. Browser-vendor push services perform final delivery. Use conservative TTL/urgency/topic values appropriate to a same-day reminder; a later reminder for the same employee/round/date must not create duplicate logical content. Vendor responses are classified into accepted, temporary failure, and permanent failure. Permanent expiry/removal responses invalidate the subscription; redirects are not followed blindly.
 
 The initial user-visible template is title **Seat bidding reminder** and body **You have not placed your bids for next week yet.** Action labels are **Place bids** and **Skip reminders this week** where supported. Content is versioned in the payload so future clients can reject or safely fall back from unknown formats; it remains generic enough for lock-screen display.
 
-The optional native Android application has no device-local reminder requirement in version 1.4. If native push is added later, it should reuse the synchronized account preference, eligibility, suppression, and dispatch concepts through a platform-token adapter rather than introduce an independent reminder schedule. Android users can use the web application/PWA for the current Web Push feature.
+The optional native Android application has no device-local reminder requirement in version 1.4.1. If native push is added later, it should reuse the synchronized account preference, eligibility, suppression, and dispatch concepts through a platform-token adapter rather than introduce an independent reminder schedule. Android users can use the web application/PWA for the current Web Push feature.
 
 ## 15. Deployment
 
@@ -1998,7 +2010,7 @@ AW. **Zero stars are preferences, not exclusion:** even when all users rate all 
 - Liquibase from an empty database and constraint enforcement.
 - Upgrade from the version 1.2 schema adds bid periods and allocation units without modifying baseline changesets; existing bids become full-day and existing assignments become one-member single units with unchanged outcomes/order/audit versions.
 - Applying the notification migration after the already committed half-day version 1.3 changes leaves those changesets untouched, creates the notification tables/constraints/indexes, and gives every existing employee the effective disabled/Monday default without synthesizing subscriptions, suppressions, dispatches, or attempts.
-- Upgrade from the complete deployed version 1.3 schema appends version 1.4 changesets without modifying any deployed checksum, backfills every existing round to configuration capacity, preserves every result/audit/ledger/reservation/notification row, leaves physical-seat references null, and synthesizes no floor-plan/preference data.
+- Upgrade from the complete deployed version 1.3 schema appends version 1.4.1 changesets without modifying any deployed checksum, backfills every existing round to configuration capacity, preserves every result/audit/ledger/reservation/notification row, leaves physical-seat references null, and synthesizes no floor-plan/preference data.
 - Pessimistic serialization of simultaneous submissions for the same participant.
 - Independent employees can update concurrently.
 - Cutoff racing with bid update.
@@ -2061,6 +2073,7 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 
 ### 17.4 Flutter tests
 
+- Administrative reservation date picker uses Monday-first weekday headers regardless of browser locale. Floor-plan editor tests cover pointer alignment guides, independent one-/two-axis Ctrl snapping, zoom-independent capture threshold, threshold exit/re-entry, release, add/drag/cancel, Ctrl+wheel zoom coexistence, and accessible non-pointer fallback.
 - Widget/golden tests for all assignment colors, today marker, reservation information, assignable-capacity boundary, and responsive layouts.
 - Bid balance, spinner states, carry-over explanation, integer division/remainder, zero behavior, and disabled save.
 - Bidding-page reservation badges/counts, assignable capacity, public description, read-only behavior, all-platform visibility, refresh after save/resume, and preservation of an unsaved draft during same-round metadata refresh.
@@ -2125,7 +2138,11 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 39. If the application is unavailable at the configured 10:00 trigger, no polling or later catch-up reminder is generated for that business date.
 40. Both the Friday allocation job and weekday reminder job use the single configured `Europe/Berlin` zone, remain at their intended local times across DST changes, and never use a client, JVM, or database default zone for business weekday decisions.
 41. Adding the notification feature after the committed half-day implementation appends new version 1.3 changesets without modifying the committed half-day changesets or any version 1.2 deployed changeset.
-42. Upgrading the deployed version 1.3 database to version 1.4 appends new changesets, marks every existing round as configuration-capacity without changing its capacity/results/audit, and creates no floor plan, seat, preference, or physical-seat assignment.
+42. Upgrading the deployed version 1.3 database to version 1.4.1 appends new changesets, marks every existing round as configuration-capacity without changing its capacity/results/audit, and creates no floor plan, seat, preference, or physical-seat assignment.
+42a. The administrator reservation date picker displays Monday as the leftmost weekday and Sunday as the rightmost, including across month/year boundaries, while preserving the selected `YYYY-MM-DD` date, manual entry, server business-zone validation, and accessibility regardless of browser/device locale.
+42b. In floor-plan add-seat mode, the horizontal and vertical guides track the pointer; when dragging a marker, they track its proposed centre. Leaving the plan, ending a drag or leaving the mode removes the guides. No guide geometry is persisted to SVG, draft markers or published plans.
+42c. Holding Ctrl close to one existing marker aligns only the qualifying axis, and close to a horizontal coordinate from one marker and a vertical coordinate from a different marker aligns both axes, allowing completion of a square/rectangle. Exact-distance ties are deterministic. The dragged marker cannot snap to itself or to a removed marker.
+42d. Snapping uses the displayed marker radius with at least an 8 CSS-pixel capture region measured after pan and zoom. Moving the raw pointer outside a target's threshold breaks that axis's snap even with Ctrl held; releasing Ctrl at any time returns to free movement. The actual saved normalised coordinates match the last visible placement preview. Touch and accessible keyboard/list editing still work without the modifier.
 43. In the first floor-plan draft, seats are numbered `1, 2, 3`; deleting provisional seat 2 renumbers provisional seat 3 to 2. Discarding the draft releases both numbers because none was published.
 44. After publishing seats `1..5`, a new draft inherits those stable numbers. Adding provisional seats 6 and 7, deleting 6, and adding another seat yields provisional 6 and 7. Deleting inherited seat 2 leaves a permanent gap; publication produces active `1, 3, 4, 5, 6, 7`, and the watermark is 7.
 45. Replacing the SVG preserves markers by default. A changed view box shows a warning but removes nothing automatically. **Remove all existing seats** retires every inherited seat only on publication; new seats start above the permanent watermark.
@@ -2168,7 +2185,7 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 
 ## 19. Implementation order
 
-1. Inspect and preserve the deployed version 1.3 Liquibase history and behavior; add only newly numbered version 1.4 changesets and safe backfills.
+1. Inspect and preserve the deployed version 1.3 Liquibase history and behavior; add only newly numbered version 1.4.1 changesets and safe backfills.
 2. Add floor-plan/version/stable-seat, employee/guest preference, anonymous guest-placement persistence, round capacity-source references, physical-seat placement columns/audit, constraints, repositories, and configuration-limit validation.
 3. Implement strict SVG parsing/sanitization, including the narrowly defined draw.io-doctype normalization and safe local-pattern support, and the pure draft/version/numbering state machine, including preservation, movement, provisional renumbering, remove-all, discard, publication, and deactivation.
 4. Implement desktop-admin floor-plan resources/services with role revalidation, CSRF, revision conflicts, authoritative publication-effect preview, atomic equal-capacity activation for an eligible configuration-only open round, successor publication/deactivation, reservation-capacity validation, and authenticated sanitized SVG delivery.
@@ -2178,7 +2195,7 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 8. Extend published assignment, bidding context, OpenAPI, problems, metrics, and operations while enforcing current-user-only seat-number disclosure.
 9. Build the desktop admin upload/marker/version and guest-preference UX with accessible list alternatives.
 10. Build cross-platform seat-preference navigation/map/list/save UX plus current-user assignment number and historical read-only map; update help and accessibility behavior.
-11. Complete version 1.3-to-1.4 migration, PostgreSQL, sanitizer, authorization, privacy, concurrency, optimizer, Flutter, container, and end-to-end verification.
+11. Complete version 1.3-to-1.4.1 migration, PostgreSQL, sanitizer, authorization, privacy, concurrency, optimizer, Flutter, container, and end-to-end verification.
 
 ## 20. Future extensions
 
@@ -2198,7 +2215,7 @@ Use Quarkus tests plus a shared Testcontainers PostgreSQL setup. The container S
 
 ## 21. Definition of done
 
-Version 1.4 is complete when all mandatory rules in this document are implemented, the backend builds/tests/runs on Java 25, Liquibase provisions an empty PostgreSQL database and safely upgrades the complete deployed version 1.3 schema without changing deployed changesets or results, security and concurrency requirements pass against PostgreSQL, the PWA is served from the Jib-built Quarkus image, bid/preference/physical-location privacy is verified, and the responsive PWA supports the complete workflow without requiring the optional Android app.
+Version 1.4.1 is complete when all mandatory rules in this document are implemented, the backend builds/tests/runs on Java 25, Liquibase provisions an empty PostgreSQL database and safely upgrades the complete deployed version 1.3 schema without changing deployed changesets or results, security and concurrency requirements pass against PostgreSQL, the PWA is served from the Jib-built Quarkus image, bid/preference/physical-location privacy is verified, and the responsive PWA supports the complete workflow without requiring the optional Android app.
 
 Allocation completion requires individual token authority during pairing selection; opposite-order complementary pairing; eligible unmatched half-day singles; indivisible pair units scored by bid sum; unit-score capacity ranking; global fairness over canonical single/pair identities; maximum utilisation, distinct winners, and lexicographic max-min distribution; randomness only among token-equivalent pairing choices or globally equivalent solutions; order independence; stable persisted units/member results/audit; and individual successful-bid-only accounting.
 

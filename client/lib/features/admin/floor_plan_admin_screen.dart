@@ -1,7 +1,10 @@
-import 'dart:typed_data';
+import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:dio/dio.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:file_selector/file_selector.dart';
 
 import '../../core/api_client.dart';
@@ -18,6 +21,8 @@ class FloorPlanAdminScreen extends StatefulWidget {
 }
 
 class _FloorPlanAdminScreenState extends State<FloorPlanAdminScreen> {
+    static const markerRadius = 20.0;
+
     AdminFloorPlan? state;
     GuestSeatPreferences? guestPreferences;
     List<GuestSeatPreference> guestDraft = const [];
@@ -27,9 +32,42 @@ class _FloorPlanAdminScreenState extends State<FloorPlanAdminScreen> {
     bool busy = true;
     String? error;
     String? notice;
+    final mapSurfaceKey = GlobalKey();
+    late final TransformationController mapController;
+    Offset? rawCandidate;
+    _PlacementCandidate? placementCandidate;
+    int? draggingSeat;
+    Offset? dragStartGlobal;
+    bool dragMoved = false;
+    bool controlPressed = false;
+    int? suppressMarkerTap;
+    Size mapSize = Size.zero;
 
     @override
-    void initState() { super.initState(); load(); }
+    void initState() {
+        super.initState();
+        mapController = TransformationController()..addListener(_recalculateCandidate);
+        controlPressed = HardwareKeyboard.instance.isControlPressed;
+        HardwareKeyboard.instance.addHandler(_handleKeyEvent);
+        load();
+    }
+
+    @override
+    void dispose() {
+        HardwareKeyboard.instance.removeHandler(_handleKeyEvent);
+        mapController.removeListener(_recalculateCandidate);
+        mapController.dispose();
+        super.dispose();
+    }
+
+    bool _handleKeyEvent(KeyEvent event) {
+        final pressed = HardwareKeyboard.instance.isControlPressed;
+        if (pressed != controlPressed) {
+            controlPressed = pressed;
+            _recalculateCandidate();
+        }
+        return false;
+    }
 
     Future<void> load() async {
         try {
@@ -56,6 +94,7 @@ class _FloorPlanAdminScreenState extends State<FloorPlanAdminScreen> {
                 state = value; svg = bytes; guestPreferences = guests;
                 guestDraft = guests?.seats ?? const [];
                 busy = false; error = null; notice = null; selectedSeat = null; addMode = addModeAfterUpdate;
+                rawCandidate = null; placementCandidate = null; draggingSeat = null; dragStartGlobal = null;
             });
         }
     }
@@ -83,14 +122,173 @@ class _FloorPlanAdminScreenState extends State<FloorPlanAdminScreen> {
     Future<void> mapTap(TapUpDetails details, Size size) async {
         final draft = state?.draft;
         if (draft == null) return;
-        final x = (details.localPosition.dx / size.width).clamp(0.0, 1.0).toDouble();
-        final y = (details.localPosition.dy / size.height).clamp(0.0, 1.0).toDouble();
+        final rawPoint = Offset(
+            details.localPosition.dx.clamp(0.0, size.width).toDouble(),
+            details.localPosition.dy.clamp(0.0, size.height).toDouble(),
+        );
+        final point = addMode
+            ? _candidate(rawPoint, size, excludedSeatId: null)
+            : _PlacementCandidate(rawPoint, false, false);
+        final x = point.position.dx / size.width;
+        final y = point.position.dy / size.height;
         if (addMode) {
+            _clearCandidate();
             await mutate(() => widget.api.addFloorPlanSeat(draft.draftRevision, x, y), keepAddMode: true);
         } else if (selectedSeat != null) {
             await mutate(() => widget.api.moveFloorPlanSeat(selectedSeat!, draft.draftRevision, x, y));
         }
     }
+
+    void _updateAddCandidate(PointerHoverEvent event, Size size) {
+        if (!addMode || busy) return;
+        _setCandidate(event.localPosition, size);
+    }
+
+    void _startSeatDrag(AdminFloorPlanSeat seat, PointerDownEvent event, Size size) {
+        if (busy || seat.state != 'ACTIVE') return;
+        final box = mapSurfaceKey.currentContext?.findRenderObject() as RenderBox?;
+        if (box == null) return;
+        final local = box.globalToLocal(event.position);
+        setState(() {
+            draggingSeat = seat.id;
+            dragStartGlobal = event.position;
+            dragMoved = false;
+            addMode = false;
+            rawCandidate = local;
+            placementCandidate = _candidate(local, size, excludedSeatId: seat.id);
+        });
+    }
+
+    void _updateSeatDrag(PointerMoveEvent event, Size size) {
+        final seatId = draggingSeat;
+        final start = dragStartGlobal;
+        if (seatId == null || start == null) return;
+        final box = mapSurfaceKey.currentContext?.findRenderObject() as RenderBox?;
+        if (box == null) return;
+        final local = box.globalToLocal(event.position);
+        if (!_inside(local, size)) {
+            _clearCandidate(keepDrag: true);
+            return;
+        }
+        final moved = dragMoved || (event.position - start).distance >= 3;
+        setState(() {
+            dragMoved = moved;
+            if (moved) selectedSeat = seatId;
+            rawCandidate = local;
+            placementCandidate = _candidate(local, size, excludedSeatId: seatId);
+        });
+    }
+
+    void _finishSeatDrag(AdminFloorPlanVersion draft) {
+        final seatId = draggingSeat;
+        final candidate = placementCandidate;
+        final shouldCommit = seatId != null && dragMoved && candidate != null;
+        setState(() {
+            draggingSeat = null;
+            dragStartGlobal = null;
+            dragMoved = false;
+            rawCandidate = null;
+            placementCandidate = null;
+            if (shouldCommit) suppressMarkerTap = seatId;
+        });
+        if (!shouldCommit) return;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && suppressMarkerTap == seatId) suppressMarkerTap = null;
+        });
+        unawaited(mutate(() => widget.api.moveFloorPlanSeat(
+            seatId, draft.draftRevision,
+            candidate.position.dx / mapSize.width,
+            candidate.position.dy / mapSize.height,
+        )));
+    }
+
+    void _cancelSeatDrag() {
+        if (draggingSeat == null) return;
+        setState(() {
+            draggingSeat = null; dragStartGlobal = null; dragMoved = false;
+            rawCandidate = null; placementCandidate = null;
+        });
+    }
+
+    void _setCandidate(Offset raw, Size size, {int? excludedSeatId}) {
+        if (!_inside(raw, size)) {
+            _clearCandidate(keepDrag: draggingSeat != null);
+            return;
+        }
+        setState(() {
+            rawCandidate = raw;
+            placementCandidate = _candidate(raw, size,
+                excludedSeatId: excludedSeatId ?? draggingSeat);
+        });
+    }
+
+    void _recalculateCandidate() {
+        final raw = rawCandidate;
+        if (!mounted || raw == null || mapSize.isEmpty) return;
+        setState(() => placementCandidate = _candidate(raw, mapSize,
+            excludedSeatId: draggingSeat));
+    }
+
+    _PlacementCandidate _candidate(Offset raw, Size size, {required int? excludedSeatId}) {
+        final clamped = Offset(
+            raw.dx.clamp(0.0, size.width).toDouble(),
+            raw.dy.clamp(0.0, size.height).toDouble(),
+        );
+        if (!controlPressed) return _PlacementCandidate(clamped, false, false);
+        final seats = state?.draft?.seats.where((seat) =>
+            seat.state == 'ACTIVE' && seat.id != excludedSeatId).toList() ?? const [];
+        final scale = mapController.value.getMaxScaleOnAxis();
+        final threshold = math.max(markerRadius * scale, 8.0);
+        final xSeat = _nearestSeat(seats, clamped.dx, size.width, scale, threshold, xAxis: true);
+        final ySeat = _nearestSeat(seats, clamped.dy, size.height, scale, threshold, xAxis: false);
+        return _PlacementCandidate(Offset(
+            xSeat == null ? clamped.dx : xSeat.x * size.width,
+            ySeat == null ? clamped.dy : ySeat.y * size.height,
+        ), xSeat != null, ySeat != null);
+    }
+
+    AdminFloorPlanSeat? _nearestSeat(List<AdminFloorPlanSeat> seats, double coordinate,
+        double extent, double scale, double threshold, {required bool xAxis}) {
+        final eligible = seats.where((seat) {
+            final target = (xAxis ? seat.x : seat.y) * extent;
+            return (coordinate - target).abs() * scale <= threshold;
+        }).toList()..sort((left, right) {
+            final leftDistance = (coordinate - (xAxis ? left.x : left.y) * extent).abs();
+            final rightDistance = (coordinate - (xAxis ? right.x : right.y) * extent).abs();
+            final distanceOrder = leftDistance.compareTo(rightDistance);
+            if (distanceOrder != 0) return distanceOrder;
+            final numberOrder = left.number.compareTo(right.number);
+            return numberOrder != 0 ? numberOrder : left.id.compareTo(right.id);
+        });
+        return eligible.firstOrNull;
+    }
+
+    void _clearCandidate({bool keepDrag = false}) {
+        if (rawCandidate == null && placementCandidate == null) return;
+        setState(() {
+            rawCandidate = null;
+            placementCandidate = null;
+            if (!keepDrag) {
+                draggingSeat = null; dragStartGlobal = null; dragMoved = false;
+            }
+        });
+    }
+
+    void _markerTap(int seatId) {
+        if (suppressMarkerTap == seatId) {
+            suppressMarkerTap = null;
+            return;
+        }
+        setState(() {
+            selectedSeat = selectedSeat == seatId ? null : seatId;
+            addMode = false;
+            rawCandidate = null;
+            placementCandidate = null;
+        });
+    }
+
+    static bool _inside(Offset point, Size size) =>
+        point.dx >= 0 && point.dy >= 0 && point.dx <= size.width && point.dy <= size.height;
 
     Future<void> mutate(Future<AdminFloorPlan> Function() action, {bool keepAddMode = false}) async {
         final addModeAfterUpdate = keepAddMode && addMode;
@@ -156,6 +354,7 @@ class _FloorPlanAdminScreenState extends State<FloorPlanAdminScreen> {
                     selected: addMode,
                     onSelected: busy ? null : (selected) => setState(() {
                         addMode = selected; selectedSeat = null;
+                        rawCandidate = null; placementCandidate = null;
                     }),
                     avatar: const Icon(Icons.add_location_alt_outlined),
                     label: const Text('Add seats on map')),
@@ -183,52 +382,50 @@ class _FloorPlanAdminScreenState extends State<FloorPlanAdminScreen> {
             for (final warning in state?.warnings ?? const <String>[])
                 Card(color: Theme.of(context).colorScheme.errorContainer,
                     child: ListTile(leading: const Icon(Icons.warning_amber), title: Text(warning))),
-            if (draft != null) Text(addMode ? 'Add-seat mode: click repeatedly to place numbered seats; turn the toggle off when finished.'
-                : selectedSeat == null ? 'Drag to pan. Hold Ctrl and use the mouse wheel to zoom, or select a marker to move it.'
-                : 'Seat selected. Click the map to move it; click the marker again or use Clear selection to unselect it.'),
+            if (draft != null) Text(addMode
+                ? 'Add-seat mode: click repeatedly to place numbered seats. Hold Ctrl to align with existing seats.'
+                : selectedSeat == null
+                    ? 'Drag the plan to pan, or drag a marker to move it. Hold Ctrl to align; Ctrl+wheel zooms.'
+                    : 'Seat selected. Drag its marker or click the map to move it; click it again to unselect it.'),
             if (shown != null && svg != null)
                 AspectRatio(aspectRatio: shown.viewBox.width / shown.viewBox.height,
                     child: LayoutBuilder(builder: (context, mapConstraints) => Stack(children: [
                         Positioned.fill(child: FloorPlanInteractiveViewer(
                             key: ValueKey('floor-plan-${shown.id}'),
-                            child: LayoutBuilder(builder: (context, constraints) => GestureDetector(
-                                onTapUp: busy || draft == null || (!addMode && selectedSeat == null)
-                                    ? null : (details) => mapTap(details, constraints.biggest),
-                                child: Stack(children: [
-                                    Positioned.fill(child: FloorPlanSvgImage(bytes: svg!,
-                                        semanticsLabel: 'Sanitized office floor plan')),
-                                    for (final seat in shown.seats) Positioned(
-                                        left: seat.x * constraints.maxWidth - 20,
-                                        top: seat.y * constraints.maxHeight - 20,
-                                        child: Semantics(label: 'Seat ${seat.number}, ${seat.state}', button: true,
-                                            child: IconButton.filled(
-                                                style: IconButton.styleFrom(
-                                                    backgroundColor: seat.state == 'PENDING_REMOVAL'
-                                                        ? Theme.of(context).colorScheme.errorContainer
-                                                        : Theme.of(context).colorScheme.primary,
-                                                    foregroundColor: seat.state == 'PENDING_REMOVAL'
-                                                        ? Theme.of(context).colorScheme.onErrorContainer
-                                                        : Colors.white,
-                                                ),
-                                                onPressed: draft != null ? () => setState(() {
-                                                    selectedSeat = selectedSeat == seat.id ? null : seat.id;
-                                                    addMode = false;
-                                                }) : guestPreferences?.versionId == shown.id
-                                                    ? () => cycleGuestSeat(seat.id) : null,
-                                                tooltip: draft == null && guestPreferences?.versionId == shown.id
-                                                    ? 'Seat ${seat.number}, ${_guestStars(seat.id)} guest stars'
-                                                    : selectedSeat == seat.id ? 'Unselect seat ${seat.number}'
-                                                    : 'Select seat ${seat.number}',
-                                                icon: Text(draft == null && guestPreferences?.versionId == shown.id
-                                                    ? '${seat.number}\n${_guestStars(seat.id)}★' : '${seat.number}',
-                                                    textAlign: TextAlign.center,
-                                                    style: TextStyle(color: seat.state == 'PENDING_REMOVAL'
-                                                        ? Theme.of(context).colorScheme.onErrorContainer
-                                                        : Colors.white, fontWeight: FontWeight.bold)),
-                                            )),
+                            controller: mapController,
+                            panEnabled: draggingSeat == null,
+                            child: LayoutBuilder(builder: (context, constraints) {
+                                mapSize = constraints.biggest;
+                                return Listener(
+                                    key: mapSurfaceKey,
+                                    behavior: HitTestBehavior.opaque,
+                                    onPointerMove: draft == null ? null
+                                        : (event) => _updateSeatDrag(event, constraints.biggest),
+                                    onPointerUp: draft == null ? null : (_) => _finishSeatDrag(draft),
+                                    onPointerCancel: draft == null ? null : (_) => _cancelSeatDrag(),
+                                    child: MouseRegion(
+                                        onHover: draft == null ? null
+                                            : (event) => _updateAddCandidate(event, constraints.biggest),
+                                        onExit: draft == null ? null : (_) => _clearCandidate(
+                                            keepDrag: draggingSeat != null),
+                                        child: GestureDetector(
+                                            behavior: HitTestBehavior.opaque,
+                                            onTapUp: busy || draft == null || (!addMode && selectedSeat == null)
+                                                ? null : (details) => mapTap(details, constraints.biggest),
+                                            child: Stack(children: [
+                                                Positioned.fill(child: FloorPlanSvgImage(bytes: svg!,
+                                                    semanticsLabel: 'Sanitized office floor plan')),
+                                                if (draft != null && placementCandidate != null)
+                                                    ..._alignmentGuides(context, placementCandidate!, constraints.biggest),
+                                                for (final seat in shown.seats)
+                                                    _seatMarker(context, shown, draft, seat, constraints.biggest),
+                                                if (draft != null && addMode && placementCandidate != null)
+                                                    _addPreview(context, placementCandidate!),
+                                            ]),
+                                        ),
                                     ),
-                                ]),
-                            )),
+                                );
+                            }),
                         )),
                         if (draft != null) _seatListOverlay(context, draft, mapConstraints.biggest),
                     ])),
@@ -266,6 +463,92 @@ class _FloorPlanAdminScreenState extends State<FloorPlanAdminScreen> {
             if (error != null) Text(error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
         ]);
     }
+
+    List<Widget> _alignmentGuides(BuildContext context, _PlacementCandidate candidate, Size size) {
+        final colors = Theme.of(context).colorScheme;
+        final verticalColor = candidate.snappedX ? colors.primary : colors.tertiary;
+        final horizontalColor = candidate.snappedY ? colors.primary : colors.tertiary;
+        return [
+            Positioned(
+                key: const ValueKey('floor-plan-guide-x'),
+                left: candidate.position.dx - (candidate.snappedX ? 1 : 0.5),
+                top: 0,
+                width: candidate.snappedX ? 2 : 1,
+                height: size.height,
+                child: IgnorePointer(child: ExcludeSemantics(child: ColoredBox(color: verticalColor))),
+            ),
+            Positioned(
+                key: const ValueKey('floor-plan-guide-y'),
+                left: 0,
+                top: candidate.position.dy - (candidate.snappedY ? 1 : 0.5),
+                width: size.width,
+                height: candidate.snappedY ? 2 : 1,
+                child: IgnorePointer(child: ExcludeSemantics(child: ColoredBox(color: horizontalColor))),
+            ),
+        ];
+    }
+
+    Widget _seatMarker(BuildContext context, AdminFloorPlanVersion shown, AdminFloorPlanVersion? draft,
+        AdminFloorPlanSeat seat, Size size) {
+        final draggedPosition = draggingSeat == seat.id ? placementCandidate?.position : null;
+        final centre = draggedPosition ?? Offset(seat.x * size.width, seat.y * size.height);
+        final guestMarker = draft == null && guestPreferences?.versionId == shown.id;
+        final colors = Theme.of(context).colorScheme;
+        return Positioned(
+            left: centre.dx - markerRadius,
+            top: centre.dy - markerRadius,
+            width: markerRadius * 2,
+            height: markerRadius * 2,
+            child: Listener(
+                onPointerDown: draft == null ? null
+                    : (event) => _startSeatDrag(seat, event, size),
+                child: Semantics(
+                    label: 'Seat ${seat.number}, ${seat.state}',
+                    button: true,
+                    child: IconButton.filled(
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints.tightFor(
+                            width: markerRadius * 2, height: markerRadius * 2),
+                        style: IconButton.styleFrom(
+                            backgroundColor: seat.state == 'PENDING_REMOVAL'
+                                ? colors.errorContainer : colors.primary,
+                            foregroundColor: seat.state == 'PENDING_REMOVAL'
+                                ? colors.onErrorContainer : Colors.white,
+                        ),
+                        onPressed: busy ? null : draft != null ? () => _markerTap(seat.id)
+                            : guestMarker ? () => cycleGuestSeat(seat.id) : null,
+                        tooltip: guestMarker
+                            ? 'Seat ${seat.number}, ${_guestStars(seat.id)} guest stars'
+                            : selectedSeat == seat.id ? 'Unselect seat ${seat.number}'
+                            : 'Select seat ${seat.number}',
+                        icon: Text(guestMarker ? '${seat.number}\n${_guestStars(seat.id)}★' : '${seat.number}',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                                color: seat.state == 'PENDING_REMOVAL'
+                                    ? colors.onErrorContainer : Colors.white,
+                                fontWeight: FontWeight.bold,
+                            )),
+                    ),
+                ),
+            ),
+        );
+    }
+
+    Widget _addPreview(BuildContext context, _PlacementCandidate candidate) => Positioned(
+        key: const ValueKey('floor-plan-add-preview'),
+        left: candidate.position.dx - markerRadius,
+        top: candidate.position.dy - markerRadius,
+        width: markerRadius * 2,
+        height: markerRadius * 2,
+        child: IgnorePointer(child: ExcludeSemantics(child: DecoratedBox(
+            decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.35),
+                border: Border.all(color: Theme.of(context).colorScheme.primary, width: 2),
+            ),
+            child: const Icon(Icons.add, color: Colors.white, size: 20),
+        ))),
+    );
 
     Widget _seatListOverlay(BuildContext context, AdminFloorPlanVersion draft, Size mapSize) {
         return FloorPlanOverlayCard(
@@ -415,6 +698,14 @@ class _FloorPlanAdminScreenState extends State<FloorPlanAdminScreen> {
         }
         return 0;
     }
+}
+
+class _PlacementCandidate {
+    const _PlacementCandidate(this.position, this.snappedX, this.snappedY);
+
+    final Offset position;
+    final bool snappedX;
+    final bool snappedY;
 }
 
 class _PublicationCard extends StatelessWidget {

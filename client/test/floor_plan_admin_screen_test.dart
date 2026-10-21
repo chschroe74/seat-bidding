@@ -1,7 +1,7 @@
-import 'dart:typed_data';
-
 import 'package:dio/dio.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:seat_bidding/core/api_client.dart';
 import 'package:seat_bidding/core/auth_service.dart';
@@ -58,14 +58,84 @@ void main() {
         expect(find.text('Seat 1'), findsNothing);
         expect(find.byTooltip('Expand seat list'), findsOneWidget);
     });
+
+    testWidgets('Ctrl aligns add preview independently on both axes', (tester) async {
+        final api = _FloorPlanApi(AuthService.testing(Dio(), _NoopCookieStore()), initialSeats: const [
+            AdminFloorPlanSeat(id: 1, number: 1, x: 0.2, y: 0.2, inherited: false, state: 'ACTIVE'),
+            AdminFloorPlanSeat(id: 2, number: 2, x: 0.7, y: 0.3, inherited: false, state: 'ACTIVE'),
+        ]);
+        await tester.pumpWidget(MaterialApp(home: Scaffold(body: FloorPlanAdminScreen(api: api))));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Add seats on map'));
+        await tester.pump();
+
+        final map = tester.getRect(find.byType(FloorPlanInteractiveViewer));
+        final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+        final hoverRegion = tester.widget<MouseRegion>(find.byWidgetPredicate(
+            (widget) => widget is MouseRegion && widget.onHover != null));
+        hoverRegion.onHover!(PointerHoverEvent(
+            position: Offset(map.width / 2, map.height / 2), kind: PointerDeviceKind.mouse));
+        await tester.pump();
+        expect(find.byKey(const ValueKey('floor-plan-guide-x')), findsOneWidget);
+        expect(find.byKey(const ValueKey('floor-plan-guide-y')), findsOneWidget);
+
+        await mouse.addPointer(location: map.center);
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        final target = Offset(map.left + map.width * 0.2 + 5, map.top + map.height * 0.3 - 5);
+        await tester.tapAt(target);
+        await tester.pumpAndSettle();
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+
+        expect(api.addedPoints, hasLength(1));
+        expect(api.addedPoints.single.dx, closeTo(0.2, 0.0001));
+        expect(api.addedPoints.single.dy, closeTo(0.3, 0.0001));
+        await mouse.removePointer();
+    });
+
+    testWidgets('drag preview excludes the dragged marker and commits its visible position', (tester) async {
+        final api = _FloorPlanApi(AuthService.testing(Dio(), _NoopCookieStore()), initialSeats: const [
+            AdminFloorPlanSeat(id: 1, number: 1, x: 0.25, y: 0.25, inherited: false, state: 'ACTIVE'),
+        ]);
+        await tester.pumpWidget(MaterialApp(home: Scaffold(body: FloorPlanAdminScreen(api: api))));
+        await tester.pumpAndSettle();
+
+        final map = tester.getRect(find.byType(FloorPlanInteractiveViewer));
+        final marker = tester.getCenter(find.byTooltip('Select seat 1'));
+        final destination = Offset(marker.dx + 5, marker.dy + 80);
+        final controller = tester.widget<InteractiveViewer>(find.byType(InteractiveViewer))
+            .transformationController!;
+        final initialTransform = controller.value.clone();
+        final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+        await mouse.addPointer(location: marker);
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await mouse.down(marker);
+        await mouse.moveTo(destination);
+        await tester.pump();
+        expect(find.byKey(const ValueKey('floor-plan-guide-x')), findsOneWidget);
+        await mouse.up();
+        await tester.pumpAndSettle();
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+
+        expect(api.moveCalls, 1);
+        expect(api.movedPoint!.dx, closeTo((destination.dx - map.left) / map.width, 0.001));
+        expect(api.movedPoint!.dx, isNot(closeTo(0.25, 0.001)));
+        expect(api.movedPoint!.dy, closeTo((destination.dy - map.top) / map.height, 0.001));
+        expect(controller.value.storage, orderedEquals(initialTransform.storage));
+        await mouse.removePointer();
+    });
 }
 
 class _FloorPlanApi extends ApiClient {
-    _FloorPlanApi(super.auth);
+    _FloorPlanApi(super.auth, {List<AdminFloorPlanSeat> initialSeats = const []}) {
+        seats.addAll(initialSeats);
+    }
 
     int addCalls = 0;
+    int moveCalls = 0;
     int revision = 0;
     final seats = <AdminFloorPlanSeat>[];
+    final addedPoints = <Offset>[];
+    Offset? movedPoint;
 
     AdminFloorPlan get value => AdminFloorPlan(
         stateRevision: revision,
@@ -95,14 +165,35 @@ class _FloorPlanApi extends ApiClient {
     Future<AdminFloorPlan> addFloorPlanSeat(int draftRevision, double x, double y) async {
         addCalls++;
         revision++;
+        addedPoints.add(Offset(x, y));
+        final nextNumber = seats.isEmpty ? 1
+            : seats.map((seat) => seat.number).reduce((left, right) => left > right ? left : right) + 1;
         seats.add(AdminFloorPlanSeat(
-            id: addCalls,
-            number: addCalls,
+            id: nextNumber,
+            number: nextNumber,
             x: x,
             y: y,
             inherited: false,
             state: 'ACTIVE',
         ));
+        return value;
+    }
+
+    @override
+    Future<AdminFloorPlan> moveFloorPlanSeat(int seatId, int draftRevision, double x, double y) async {
+        moveCalls++;
+        revision++;
+        movedPoint = Offset(x, y);
+        final index = seats.indexWhere((seat) => seat.id == seatId);
+        final seat = seats[index];
+        seats[index] = AdminFloorPlanSeat(
+            id: seat.id,
+            number: seat.number,
+            x: x,
+            y: y,
+            inherited: seat.inherited,
+            state: seat.state,
+        );
         return value;
     }
 }
