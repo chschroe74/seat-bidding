@@ -6,6 +6,9 @@ import 'package:file_selector/file_selector.dart';
 
 import '../../core/api_client.dart';
 import '../../core/models.dart';
+import '../floor_plan/floor_plan_interactive_viewer.dart';
+import '../floor_plan/floor_plan_overlay_card.dart';
+import '../floor_plan/floor_plan_svg_image.dart';
 
 class FloorPlanAdminScreen extends StatefulWidget {
     const FloorPlanAdminScreen({super.key, required this.api});
@@ -16,11 +19,14 @@ class FloorPlanAdminScreen extends StatefulWidget {
 
 class _FloorPlanAdminScreenState extends State<FloorPlanAdminScreen> {
     AdminFloorPlan? state;
+    GuestSeatPreferences? guestPreferences;
+    List<GuestSeatPreference> guestDraft = const [];
     Uint8List? svg;
     int? selectedSeat;
     bool addMode = false;
     bool busy = true;
     String? error;
+    String? notice;
 
     @override
     void initState() { super.initState(); load(); }
@@ -34,21 +40,44 @@ class _FloorPlanAdminScreenState extends State<FloorPlanAdminScreen> {
         }
     }
 
-    Future<void> update(AdminFloorPlan value) async {
+    Future<void> update(AdminFloorPlan value, {bool addModeAfterUpdate = false}) async {
         final version = value.draft ?? value.pendingVersion ?? value.activeVersion;
         final bytes = version == null ? null : await widget.api.floorPlanSvg(version.svgUrl);
+        GuestSeatPreferences? guests;
+        if (value.activeVersion != null) {
+            try {
+                guests = await widget.api.guestSeatPreferences();
+            } on DioException catch (failure) {
+                if (failure.response?.statusCode != 404) rethrow;
+            }
+        }
         if (mounted) {
             setState(() {
-                state = value; svg = bytes; busy = false; error = null; selectedSeat = null; addMode = false;
+                state = value; svg = bytes; guestPreferences = guests;
+                guestDraft = guests?.seats ?? const [];
+                busy = false; error = null; notice = null; selectedSeat = null; addMode = addModeAfterUpdate;
             });
         }
     }
 
     Future<void> upload() async {
-        const group = XTypeGroup(label: 'SVG floor plans', extensions: ['svg'], mimeTypes: ['image/svg+xml']);
-        final file = await openFile(acceptedTypeGroups: const [group]);
-        if (file == null) return;
-        await mutate(() async => widget.api.uploadFloorPlan(await file.readAsBytes()));
+        try {
+            const group = XTypeGroup(label: 'SVG floor plans', extensions: ['svg'], mimeTypes: ['image/svg+xml']);
+            final file = await openFile(acceptedTypeGroups: const [group]);
+            if (file == null) return;
+            await mutate(() async => widget.api.uploadFloorPlan(await file.readAsBytes()));
+        }
+        on DioException catch (failure) {
+            if (mounted) setState(() { busy = false; error = _detail(failure); });
+        }
+        catch (_) {
+            if (mounted) {
+                setState(() {
+                    busy = false;
+                    error = 'The SVG file picker could not be opened. Reload the application and retry.';
+                });
+            }
+        }
     }
 
     Future<void> mapTap(TapUpDetails details, Size size) async {
@@ -57,16 +86,53 @@ class _FloorPlanAdminScreenState extends State<FloorPlanAdminScreen> {
         final x = (details.localPosition.dx / size.width).clamp(0.0, 1.0).toDouble();
         final y = (details.localPosition.dy / size.height).clamp(0.0, 1.0).toDouble();
         if (addMode) {
-            await mutate(() => widget.api.addFloorPlanSeat(draft.draftRevision, x, y));
+            await mutate(() => widget.api.addFloorPlanSeat(draft.draftRevision, x, y), keepAddMode: true);
         } else if (selectedSeat != null) {
             await mutate(() => widget.api.moveFloorPlanSeat(selectedSeat!, draft.draftRevision, x, y));
         }
     }
 
-    Future<void> mutate(Future<AdminFloorPlan> Function() action) async {
-        setState(() { busy = true; error = null; });
-        try { await update(await action()); }
+    Future<void> mutate(Future<AdminFloorPlan> Function() action, {bool keepAddMode = false}) async {
+        final addModeAfterUpdate = keepAddMode && addMode;
+        setState(() { busy = true; error = null; notice = null; });
+        try { await update(await action(), addModeAfterUpdate: addModeAfterUpdate); }
         on DioException catch (failure) { if (mounted) setState(() { busy = false; error = _detail(failure); }); }
+    }
+
+    void cycleGuestSeat(int seatId) {
+        final preferredExists = guestDraft.any((seat) => seat.stars == 3 && seat.id != seatId);
+        setState(() {
+            guestDraft = guestDraft.map((seat) {
+                if (seat.id != seatId) return seat;
+                final next = switch (seat.stars) {
+                    0 => 1,
+                    1 => 2,
+                    2 when !preferredExists => 3,
+                    _ => 0,
+                };
+                return seat.copyWith(stars: next);
+            }).toList();
+        });
+    }
+
+    Future<void> saveGuestPreferences() async {
+        final current = guestPreferences;
+        if (current == null) {
+            return;
+        }
+        setState(() { busy = true; error = null; notice = null; });
+        try {
+            final saved = await widget.api.replaceGuestSeatPreferences(current, guestDraft);
+            if (mounted) {
+                setState(() {
+                    guestPreferences = saved; guestDraft = saved.seats; busy = false;
+                    notice = saved.effectiveForCurrentRound ? 'Guest preferences saved.'
+                        : 'Saved. These guest preferences apply only to future rounds because cutoff has passed.';
+                });
+            }
+        } on DioException catch (failure) {
+            if (mounted) setState(() { busy = false; error = _detail(failure); });
+        }
     }
 
     @override
@@ -86,10 +152,13 @@ class _FloorPlanAdminScreenState extends State<FloorPlanAdminScreen> {
                     || state?.publicationPreview?.reason == 'PENDING_CHANGE'
                     ? null : () => _confirmPublish(context, draft),
                     child: const Text('Publish floor plan')),
-                if (draft != null) OutlinedButton.icon(
-                    onPressed: busy ? null : () => setState(() { addMode = !addMode; selectedSeat = null; }),
-                    icon: const Icon(Icons.add_location_alt_outlined),
-                    label: Text(addMode ? 'Cancel adding' : 'Add seat on map')),
+                if (draft != null) FilterChip(
+                    selected: addMode,
+                    onSelected: busy ? null : (selected) => setState(() {
+                        addMode = selected; selectedSeat = null;
+                    }),
+                    avatar: const Icon(Icons.add_location_alt_outlined),
+                    label: const Text('Add seats on map')),
                 if (draft != null) OutlinedButton.icon(
                     onPressed: busy ? null : () => _addByCoordinates(context, draft),
                     icon: const Icon(Icons.pin_drop_outlined), label: const Text('Add by coordinates')),
@@ -103,6 +172,9 @@ class _FloorPlanAdminScreenState extends State<FloorPlanAdminScreen> {
                     OutlinedButton(onPressed: busy ? null : () => _confirmDeactivate(context),
                         child: const Text('Delete floor plan')),
             ]),
+            const SizedBox(height: 8),
+            const Text('Standard draw.io SVG exports are supported. Embedded styling and editor metadata are '
+                'removed during upload.'),
             const SizedBox(height: 12),
             if (state?.publicationPreview != null)
                 _PublicationCard(timing: state!.publicationPreview!, published: false),
@@ -111,57 +183,134 @@ class _FloorPlanAdminScreenState extends State<FloorPlanAdminScreen> {
             for (final warning in state?.warnings ?? const <String>[])
                 Card(color: Theme.of(context).colorScheme.errorContainer,
                     child: ListTile(leading: const Icon(Icons.warning_amber), title: Text(warning))),
-            if (draft != null) Text(addMode ? 'Add-seat mode: click the map to place the next numbered seat.'
-                : selectedSeat == null ? 'Pan or zoom the map, or select a marker to move it.'
-                : 'Seat selected. Click the map to move it.'),
+            if (draft != null) Text(addMode ? 'Add-seat mode: click repeatedly to place numbered seats; turn the toggle off when finished.'
+                : selectedSeat == null ? 'Drag to pan. Hold Ctrl and use the mouse wheel to zoom, or select a marker to move it.'
+                : 'Seat selected. Click the map to move it; click the marker again or use Clear selection to unselect it.'),
             if (shown != null && svg != null)
                 AspectRatio(aspectRatio: shown.viewBox.width / shown.viewBox.height,
-                    child: InteractiveViewer(minScale: 0.5, maxScale: 6,
-                        boundaryMargin: const EdgeInsets.all(80),
-                        child: LayoutBuilder(builder: (context, constraints) => GestureDetector(
-                            onTapUp: busy || draft == null || (!addMode && selectedSeat == null)
-                                ? null : (details) => mapTap(details, constraints.biggest),
-                            child: Stack(children: [
-                                Positioned.fill(child: Image.memory(svg!, fit: BoxFit.fill,
-                                    semanticLabel: 'Sanitized office floor plan')),
-                                for (final seat in shown.seats) Positioned(
-                                    left: seat.x * constraints.maxWidth - 20,
-                                    top: seat.y * constraints.maxHeight - 20,
-                                    child: Semantics(label: 'Seat ${seat.number}, ${seat.state}', button: true,
-                                        child: IconButton.filled(
-                                            style: IconButton.styleFrom(backgroundColor: seat.state == 'PENDING_REMOVAL'
-                                                ? Theme.of(context).colorScheme.errorContainer : null),
-                                            onPressed: draft == null ? null : () => setState(() {
-                                                selectedSeat = seat.id; addMode = false;
-                                            }),
-                                            tooltip: 'Seat ${seat.number}', icon: Text('${seat.number}'),
-                                        )),
-                                ),
-                            ]),
+                    child: LayoutBuilder(builder: (context, mapConstraints) => Stack(children: [
+                        Positioned.fill(child: FloorPlanInteractiveViewer(
+                            key: ValueKey('floor-plan-${shown.id}'),
+                            child: LayoutBuilder(builder: (context, constraints) => GestureDetector(
+                                onTapUp: busy || draft == null || (!addMode && selectedSeat == null)
+                                    ? null : (details) => mapTap(details, constraints.biggest),
+                                child: Stack(children: [
+                                    Positioned.fill(child: FloorPlanSvgImage(bytes: svg!,
+                                        semanticsLabel: 'Sanitized office floor plan')),
+                                    for (final seat in shown.seats) Positioned(
+                                        left: seat.x * constraints.maxWidth - 20,
+                                        top: seat.y * constraints.maxHeight - 20,
+                                        child: Semantics(label: 'Seat ${seat.number}, ${seat.state}', button: true,
+                                            child: IconButton.filled(
+                                                style: IconButton.styleFrom(
+                                                    backgroundColor: seat.state == 'PENDING_REMOVAL'
+                                                        ? Theme.of(context).colorScheme.errorContainer
+                                                        : Theme.of(context).colorScheme.primary,
+                                                    foregroundColor: seat.state == 'PENDING_REMOVAL'
+                                                        ? Theme.of(context).colorScheme.onErrorContainer
+                                                        : Colors.white,
+                                                ),
+                                                onPressed: draft != null ? () => setState(() {
+                                                    selectedSeat = selectedSeat == seat.id ? null : seat.id;
+                                                    addMode = false;
+                                                }) : guestPreferences?.versionId == shown.id
+                                                    ? () => cycleGuestSeat(seat.id) : null,
+                                                tooltip: draft == null && guestPreferences?.versionId == shown.id
+                                                    ? 'Seat ${seat.number}, ${_guestStars(seat.id)} guest stars'
+                                                    : selectedSeat == seat.id ? 'Unselect seat ${seat.number}'
+                                                    : 'Select seat ${seat.number}',
+                                                icon: Text(draft == null && guestPreferences?.versionId == shown.id
+                                                    ? '${seat.number}\n${_guestStars(seat.id)}★' : '${seat.number}',
+                                                    textAlign: TextAlign.center,
+                                                    style: TextStyle(color: seat.state == 'PENDING_REMOVAL'
+                                                        ? Theme.of(context).colorScheme.onErrorContainer
+                                                        : Colors.white, fontWeight: FontWeight.bold)),
+                                            )),
+                                    ),
+                                ]),
+                            )),
                         )),
+                        if (draft != null) _seatListOverlay(context, draft, mapConstraints.biggest),
+                    ])),
+                ),
+            if (guestPreferences != null) ...[
+                const Divider(height: 36),
+                Text('Guest seat preferences', style: Theme.of(context).textTheme.titleLarge),
+                const SizedBox(height: 4),
+                const Text('This shared rating applies to anonymous reserved guests only. Employees are assigned '
+                    'first using every seat; guests then receive the highest-rated unused seats. Zero stars means '
+                    'least preferred, not unavailable.'),
+                const SizedBox(height: 8),
+                for (final seat in guestDraft) ListTile(
+                    title: Text('Seat ${seat.number}'),
+                    subtitle: Text(seat.stars == 0 ? 'Least preferred · still assignable'
+                        : '${seat.stars} star${seat.stars == 1 ? '' : 's'}'),
+                    trailing: Semantics(
+                        button: true,
+                        label: 'Seat ${seat.number}, ${seat.stars} stars. Change guest rating.',
+                        child: OutlinedButton.icon(
+                            onPressed: busy ? null : () => cycleGuestSeat(seat.id),
+                            icon: Icon(seat.stars == 0 ? Icons.star_border : Icons.star),
+                            label: Text('${seat.stars} / 3'),
+                        ),
                     ),
                 ),
-            if (draft != null)
-                for (final seat in draft.seats) ListTile(
-                    title: Text('Seat ${seat.number}'),
-                    subtitle: Text(seat.inherited ? '${seat.state} · permanent number' : 'New in this draft'),
-                    selected: selectedSeat == seat.id,
-                    onTap: () => setState(() => selectedSeat = seat.id),
-                    trailing: Wrap(children: [
-                        IconButton(icon: const Icon(Icons.edit_location_alt_outlined), tooltip: 'Move by coordinates',
-                            onPressed: busy || seat.state != 'ACTIVE' ? null
-                                : () => _moveByCoordinates(context, draft, seat)),
-                        IconButton(
-                            icon: Icon(seat.state == 'PENDING_REMOVAL' ? Icons.restore : Icons.delete_outline),
-                            tooltip: seat.state == 'PENDING_REMOVAL' ? 'Restore seat' : 'Remove seat',
-                            onPressed: busy ? null : () => mutate(() => seat.state == 'PENDING_REMOVAL'
-                                ? widget.api.restoreFloorPlanSeat(seat.id, draft.draftRevision)
-                                : widget.api.deleteFloorPlanSeat(seat.id, draft.draftRevision))),
-                    ]),
-                ),
+                Align(alignment: Alignment.centerLeft, child: FilledButton.icon(
+                    onPressed: busy || !_guestChanged ? null : saveGuestPreferences,
+                    icon: const Icon(Icons.save_outlined),
+                    label: const Text('Save guest preferences'),
+                )),
+            ],
             if (busy) const LinearProgressIndicator(),
+            if (notice != null) Text(notice!, style: TextStyle(color: Theme.of(context).colorScheme.primary)),
             if (error != null) Text(error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
         ]);
+    }
+
+    Widget _seatListOverlay(BuildContext context, AdminFloorPlanVersion draft, Size mapSize) {
+        return FloorPlanOverlayCard(
+            key: ValueKey('seat-list-${draft.id}'),
+            mapSize: mapSize,
+            title: 'Seats (${draft.seats.length})',
+            rowCount: draft.seats.length,
+            headerActions: [
+                if (selectedSeat != null) IconButton(
+                    onPressed: () => setState(() => selectedSeat = null),
+                    tooltip: 'Clear seat selection',
+                    icon: const Icon(Icons.deselect),
+                ),
+            ],
+            child: ListView(padding: EdgeInsets.zero, children: [
+                for (final seat in draft.seats) ListTile(
+                    dense: true,
+                    visualDensity: VisualDensity.compact,
+                    title: Text('Seat ${seat.number}'),
+                    subtitle: Text(seat.inherited ? '${seat.state} · permanent' : 'New in draft'),
+                    selected: selectedSeat == seat.id,
+                    onTap: () => setState(() {
+                        selectedSeat = selectedSeat == seat.id ? null : seat.id;
+                        addMode = false;
+                    }),
+                    trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                        IconButton(
+                            icon: const Icon(Icons.edit_location_alt_outlined),
+                            tooltip: 'Move seat ${seat.number} by coordinates',
+                            onPressed: busy || seat.state != 'ACTIVE' ? null
+                                : () => _moveByCoordinates(context, draft, seat),
+                        ),
+                        IconButton(
+                            icon: Icon(seat.state == 'PENDING_REMOVAL'
+                                ? Icons.restore : Icons.delete_outline),
+                            tooltip: seat.state == 'PENDING_REMOVAL'
+                                ? 'Restore seat ${seat.number}' : 'Remove seat ${seat.number}',
+                            onPressed: busy ? null : () => mutate(() => seat.state == 'PENDING_REMOVAL'
+                                ? widget.api.restoreFloorPlanSeat(seat.id, draft.draftRevision)
+                                : widget.api.deleteFloorPlanSeat(seat.id, draft.draftRevision)),
+                        ),
+                    ]),
+                ),
+            ]),
+        );
     }
 
     Future<void> _confirmDeactivate(BuildContext context) async {
@@ -252,6 +401,20 @@ class _FloorPlanAdminScreenState extends State<FloorPlanAdminScreen> {
 
     static String _detail(DioException failure) => failure.error is Problem
         ? (failure.error as Problem).detail : 'The request failed. Check your connection and retry.';
+
+    bool get _guestChanged {
+        final saved = guestPreferences?.seats;
+        if (saved == null || saved.length != guestDraft.length) return false;
+        final byId = {for (final seat in saved) seat.id: seat.stars};
+        return guestDraft.any((seat) => byId[seat.id] != seat.stars);
+    }
+
+    int _guestStars(int seatId) {
+        for (final seat in guestDraft) {
+            if (seat.id == seatId) return seat.stars;
+        }
+        return 0;
+    }
 }
 
 class _PublicationCard extends StatelessWidget {

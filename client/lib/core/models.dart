@@ -369,6 +369,42 @@ class AdminFloorPlan {
     );
 }
 
+class GuestSeatPreference {
+    const GuestSeatPreference({required this.id, required this.number, required this.stars});
+    final int id;
+    final int number;
+    final int stars;
+    GuestSeatPreference copyWith({int? stars}) => GuestSeatPreference(
+        id: id, number: number, stars: stars ?? this.stars,
+    );
+    factory GuestSeatPreference.fromJson(Map<String, dynamic> json) => GuestSeatPreference(
+        id: json['id'] as int,
+        number: json['number'] as int,
+        stars: json['stars'] as int? ?? 0,
+    );
+}
+
+class GuestSeatPreferences {
+    const GuestSeatPreferences({required this.versionId, required this.preferenceRevision,
+        required this.cutoffAt, required this.serverTime, required this.effectiveForCurrentRound,
+        required this.seats});
+    final int versionId;
+    final int preferenceRevision;
+    final DateTime cutoffAt;
+    final DateTime serverTime;
+    final bool effectiveForCurrentRound;
+    final List<GuestSeatPreference> seats;
+    factory GuestSeatPreferences.fromJson(Map<String, dynamic> json) => GuestSeatPreferences(
+        versionId: json['floorPlanVersionId'] as int,
+        preferenceRevision: json['preferenceRevision'] as int? ?? 0,
+        cutoffAt: DateTime.parse(json['cutoffAt'] as String),
+        serverTime: DateTime.parse(json['serverTime'] as String),
+        effectiveForCurrentRound: json['effectiveForCurrentRound'] as bool? ?? true,
+        seats: (json['seats'] as List).map((value) =>
+            GuestSeatPreference.fromJson(value as Map<String, dynamic>)).toList(),
+    );
+}
+
 class AssignmentDay {
     const AssignmentDay({
         required this.date,

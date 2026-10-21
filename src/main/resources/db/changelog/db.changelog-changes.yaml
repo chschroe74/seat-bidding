@@ -11,3 +11,5 @@ databaseChangeLog:
       file: db/changelog/changes/005-web-push-bid-reminders.yaml
   - include:
       file: db/changelog/changes/006-floor-plans.yaml
+  - include:
+      file: db/changelog/changes/007-guest-seat-preferences.yaml

@@ -5,6 +5,8 @@ import de.gigaworks.seatbidding.dto.AdminFloorPlanResponse;
 import de.gigaworks.seatbidding.dto.ConfirmedRevisionRequest;
 import de.gigaworks.seatbidding.dto.FloorPlanResponse;
 import de.gigaworks.seatbidding.dto.FloorPlanSeatMutationRequest;
+import de.gigaworks.seatbidding.dto.GuestSeatPreferencesResponse;
+import de.gigaworks.seatbidding.dto.ReplaceGuestSeatPreferencesRequest;
 import de.gigaworks.seatbidding.dto.ReplaceSeatPreferencesRequest;
 import de.gigaworks.seatbidding.dto.RevisionRequest;
 import de.gigaworks.seatbidding.exception.ApplicationProblem;
@@ -23,6 +25,10 @@ import de.gigaworks.seatbidding.persistence.FloorPlanVersionRepository;
 import de.gigaworks.seatbidding.persistence.FloorPlanVersionSeatEntity;
 import de.gigaworks.seatbidding.persistence.FloorPlanVersionSeatRepository;
 import de.gigaworks.seatbidding.persistence.FloorPlanVersionStatus;
+import de.gigaworks.seatbidding.persistence.GuestSeatPreferenceEntity;
+import de.gigaworks.seatbidding.persistence.GuestSeatPreferenceRepository;
+import de.gigaworks.seatbidding.persistence.GuestSeatPreferenceRevisionEntity;
+import de.gigaworks.seatbidding.persistence.GuestSeatPreferenceRevisionRepository;
 import de.gigaworks.seatbidding.persistence.PhysicalSeatEntity;
 import de.gigaworks.seatbidding.persistence.PhysicalSeatRepository;
 import de.gigaworks.seatbidding.persistence.RoundDateRepository;
@@ -50,6 +56,8 @@ public class FloorPlanService {
     @Inject EmployeeSeatPreferenceRevisionRepository preferenceRevisions;
     @Inject EmployeeRepository employees;
     @Inject EmployeeSeatPreferenceRepository preferences;
+    @Inject GuestSeatPreferenceRevisionRepository guestPreferenceRevisions;
+    @Inject GuestSeatPreferenceRepository guestPreferences;
     @Inject BiddingRoundRepository rounds;
     @Inject RoundDateRepository roundDates;
     @Inject SeatBiddingConfiguration configuration;
@@ -63,6 +71,61 @@ public class FloorPlanService {
         identity.requireCurrentAdmin();
         return plans.findSingleton().map(this::adminResponse)
                 .orElse(new AdminFloorPlanResponse(0, 0, null, null, false, null, List.of(), null, null));
+    }
+
+    @Transactional
+    public GuestSeatPreferencesResponse guestPreferences() {
+        identity.requireCurrentAdmin();
+        var round = rounds.findOpen().filter(value -> value.floorPlanVersion != null).orElseThrow(() ->
+                ApplicationProblem.notFound("FLOOR_PLAN_NOT_FOUND", "The current round has no floor plan."));
+        return guestResponse(round);
+    }
+
+    @Transactional
+    public GuestSeatPreferencesResponse replaceGuestPreferences(ReplaceGuestSeatPreferencesRequest request) {
+        var admin = identity.requireCurrentAdmin();
+        var visible = rounds.findOpen().filter(value -> value.floorPlanVersion != null).orElseThrow(() ->
+                ApplicationProblem.notFound("FLOOR_PLAN_NOT_FOUND", "The current round has no floor plan."));
+        var round = rounds.findByIdForUpdate(visible.id).filter(value -> value.floorPlanVersion != null)
+                .orElseThrow(() -> ApplicationProblem.conflict("ROUND_PROCESSING", "The round changed",
+                        "Refresh before saving."));
+        if (round.status != de.gigaworks.seatbidding.persistence.RoundStatus.OPEN
+                || !round.floorPlanVersion.id.equals(request.floorPlanVersionId())) {
+            throw ApplicationProblem.conflict("STALE_FLOOR_PLAN", "The floor plan changed", "Refresh before saving.");
+        }
+        var plan = plans.findSingletonForUpdate().filter(value ->
+                value.id.equals(round.floorPlanVersion.floorPlan.id)).orElseThrow(() ->
+                        ApplicationProblem.conflict("STALE_FLOOR_PLAN", "The floor plan changed",
+                                "Refresh before saving."));
+        var latest = guestPreferenceRevisions.findLatest(plan.id).orElse(null);
+        long latestRevision = latest == null ? 0 : latest.revisionNo;
+        if (latestRevision != request.preferenceRevision()) {
+            throw ApplicationProblem.conflict("STALE_GUEST_PREFERENCES", "Guest preferences changed",
+                    "Refresh before saving.");
+        }
+        var active = markers.findActiveForVersion(round.floorPlanVersion.id);
+        var activeIds = active.stream().map(value -> value.physicalSeat.id).collect(java.util.stream.Collectors.toSet());
+        validatePreferences(request.preferences().stream()
+                .map(value -> new SubmittedPreference(value.seatId(), value.stars())).toList(), activeIds,
+                "INVALID_GUEST_SEAT_PREFERENCES");
+
+        var revision = new GuestSeatPreferenceRevisionEntity();
+        revision.floorPlan = plan;
+        revision.revisionNo = latestRevision + 1;
+        revision.createdBy = admin;
+        revision.createdAt = clock.instant();
+        guestPreferenceRevisions.persist(revision);
+        var seatsById = active.stream().collect(java.util.stream.Collectors.toMap(value -> value.physicalSeat.id,
+                value -> value.physicalSeat));
+        for (var submitted : request.preferences()) {
+            var preference = new GuestSeatPreferenceEntity();
+            preference.revision = revision;
+            preference.physicalSeat = seatsById.get(submitted.seatId());
+            preference.stars = (short) submitted.stars();
+            guestPreferences.persist(preference);
+        }
+        guestPreferenceRevisions.flush();
+        return guestResponse(round);
     }
 
     @Transactional
@@ -90,6 +153,14 @@ public class FloorPlanService {
                     ? versions.findLatestPublished(plan.id).orElse(null) : plan.activeVersion;
             draft.status = FloorPlanVersionStatus.DRAFT;
             draft.createdBy = admin;
+        }
+        draft.sanitizedSvg = sanitized.content();
+        draft.contentSha256 = sanitized.sha256();
+        draft.viewBoxMinX = sanitized.minX();
+        draft.viewBoxMinY = sanitized.minY();
+        draft.viewBoxWidth = sanitized.width();
+        draft.viewBoxHeight = sanitized.height();
+        if (created) {
             versions.persist(draft);
             versions.flush();
             if (draft.baseVersion != null) {
@@ -105,12 +176,6 @@ public class FloorPlanService {
                 }
             }
         }
-        draft.sanitizedSvg = sanitized.content();
-        draft.contentSha256 = sanitized.sha256();
-        draft.viewBoxMinX = sanitized.minX();
-        draft.viewBoxMinY = sanitized.minY();
-        draft.viewBoxWidth = sanitized.width();
-        draft.viewBoxHeight = sanitized.height();
         draft.draftRevision++;
         plan.stateRevision++;
         return new UploadResult(created, adminResponse(plan, warnings));
@@ -431,6 +496,43 @@ public class FloorPlanService {
                 clock.instant().isBefore(round.cutoffAt), seats);
     }
 
+    private GuestSeatPreferencesResponse guestResponse(
+            de.gigaworks.seatbidding.persistence.BiddingRoundEntity round) {
+        var version = round.floorPlanVersion;
+        var latest = guestPreferenceRevisions.findLatest(version.floorPlan.id).orElse(null);
+        Map<Long, Integer> ratings = new HashMap<>();
+        if (latest != null) {
+            guestPreferences.findForRevision(latest.id).forEach(value -> ratings.put(value.physicalSeat.id,
+                    (int) value.stars));
+        }
+        var seats = markers.findActiveForVersion(version.id).stream().map(value ->
+                new GuestSeatPreferencesResponse.Seat(value.physicalSeat.id, value.seatNumber,
+                        ratings.getOrDefault(value.physicalSeat.id, 0))).toList();
+        var now = clock.instant();
+        return new GuestSeatPreferencesResponse(version.id, latest == null ? 0 : latest.revisionNo,
+                round.cutoffAt, now, now.isBefore(round.cutoffAt), seats);
+    }
+
+    private static void validatePreferences(List<SubmittedPreference> preferences, java.util.Set<Long> activeIds,
+            String code) {
+        var submitted = new HashSet<Long>();
+        int threeStars = 0;
+        for (var preference : preferences) {
+            if (!activeIds.contains(preference.seatId()) || !submitted.add(preference.seatId())
+                    || preference.stars() < 1 || preference.stars() > 3) {
+                throw ApplicationProblem.badRequest(code, "Invalid seat preferences",
+                        "Preferences must contain distinct active seats with one to three stars.");
+            }
+            if (preference.stars() == 3) {
+                threeStars++;
+            }
+        }
+        if (threeStars > 1) {
+            throw ApplicationProblem.badRequest("MULTIPLE_PREFERRED_SEATS", "Invalid seat preferences",
+                    "Only one seat may have three stars.");
+        }
+    }
+
     private AdminFloorPlanResponse adminResponse(FloorPlanEntity plan) {
         return adminResponse(plan, List.of(), null);
     }
@@ -549,5 +651,8 @@ public class FloorPlanService {
     }
 
     public record UploadResult(boolean created, AdminFloorPlanResponse response) {
+    }
+
+    private record SubmittedPreference(long seatId, int stars) {
     }
 }

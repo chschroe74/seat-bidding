@@ -5,6 +5,9 @@ import 'package:flutter/material.dart';
 
 import '../../core/api_client.dart';
 import '../../core/models.dart';
+import 'floor_plan_interactive_viewer.dart';
+import 'floor_plan_overlay_card.dart';
+import 'floor_plan_svg_image.dart';
 
 class FloorPlanScreen extends StatefulWidget {
     const FloorPlanScreen({super.key, required this.api, this.readOnly = false});
@@ -78,17 +81,16 @@ class _FloorPlanScreenState extends State<FloorPlanScreen> {
                     style: Theme.of(context).textTheme.headlineMedium),
                 Text(widget.readOnly ? 'Numbered floor plan for the latest published assignments.'
                     : 'Choose one preferred three-star seat and any number of one- or two-star seats. Unrated seats remain possible.'),
+                const Text('Drag to pan. Hold Ctrl and use the mouse wheel to zoom; touch users can pinch.'),
                 const SizedBox(height: 12),
                 AspectRatio(
                     aspectRatio: plan!.viewBox.width / plan!.viewBox.height,
-                    child: InteractiveViewer(
-                        minScale: 0.5,
-                        maxScale: 6,
-                        boundaryMargin: const EdgeInsets.all(80),
-                        child: LayoutBuilder(builder: (context, constraints) => Stack(
-                            children: [
-                                if (svg != null) Positioned.fill(child: Image.memory(svg!, fit: BoxFit.fill,
-                                    semanticLabel: 'Office floor plan')),
+                    child: LayoutBuilder(builder: (context, mapConstraints) => Stack(children: [
+                        Positioned.fill(child: FloorPlanInteractiveViewer(
+                            key: ValueKey('floor-plan-${plan!.versionId}'),
+                            child: LayoutBuilder(builder: (context, constraints) => Stack(children: [
+                                if (svg != null) Positioned.fill(child: FloorPlanSvgImage(bytes: svg!,
+                                    semanticsLabel: 'Office floor plan')),
                                 for (final seat in plan!.seats)
                                     Positioned(
                                         left: seat.x * constraints.maxWidth - 22,
@@ -96,19 +98,29 @@ class _FloorPlanScreenState extends State<FloorPlanScreen> {
                                         child: _SeatButton(seat: seat, showStars: !widget.readOnly,
                                             onPressed: widget.readOnly ? null : () => cycle(seat)),
                                     ),
-                            ],
+                            ])),
                         )),
-                    ),
+                        FloorPlanOverlayCard(
+                            key: ValueKey('seat-list-${plan!.versionId}'),
+                            mapSize: mapConstraints.biggest,
+                            title: 'Seats (${plan!.seats.length})',
+                            rowCount: plan!.seats.length,
+                            rowExtent: 56,
+                            child: ListView(padding: EdgeInsets.zero, children: [
+                                for (final seat in plan!.seats)
+                                    ListTile(
+                                        dense: true,
+                                        visualDensity: VisualDensity.compact,
+                                        title: Text('Seat ${seat.number}'),
+                                        subtitle: widget.readOnly ? null : Text(seat.stars == 0
+                                            ? 'Unrated' : '${seat.stars} star${seat.stars == 1 ? '' : 's'}'),
+                                        trailing: widget.readOnly ? null : _Stars(stars: seat.stars),
+                                        onTap: widget.readOnly ? null : () => cycle(seat),
+                                    ),
+                            ]),
+                        ),
+                    ])),
                 ),
-                const SizedBox(height: 12),
-                Text('Accessible seat list', style: Theme.of(context).textTheme.titleLarge),
-                for (final seat in plan!.seats)
-                    ListTile(
-                        title: Text('Seat ${seat.number}'),
-                        subtitle: widget.readOnly ? null : Text(seat.stars == 0 ? 'Unrated' : '${seat.stars} star${seat.stars == 1 ? '' : 's'}'),
-                        trailing: widget.readOnly ? null : _Stars(stars: seat.stars),
-                        onTap: widget.readOnly ? null : () => cycle(seat),
-                    ),
                 if (!widget.readOnly && !plan!.effectiveForCurrentRound)
                     const Text('Changes saved now apply to future rounds because the current cutoff has passed.'),
                 if (error != null) Text(error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
@@ -137,7 +149,7 @@ class _SeatButton extends StatelessWidget {
         button: true,
         label: showStars ? 'Seat ${seat.number}, ${seat.stars} stars' : 'Seat ${seat.number}',
         child: Material(
-            color: Theme.of(context).colorScheme.primaryContainer,
+            color: Theme.of(context).colorScheme.primary,
             shape: const CircleBorder(),
             elevation: 3,
             child: InkWell(
@@ -145,7 +157,8 @@ class _SeatButton extends StatelessWidget {
                 onTap: onPressed,
                 child: SizedBox(width: 44, height: 44, child: Center(child: Text(showStars
                     ? '${seat.number}\n${List.filled(seat.stars, '★').join()}' : '${seat.number}',
-                    textAlign: TextAlign.center, style: const TextStyle(fontSize: 11)))),
+                    textAlign: TextAlign.center, style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold,
+                        color: Theme.of(context).colorScheme.onPrimary)))),
             ),
         ),
     );

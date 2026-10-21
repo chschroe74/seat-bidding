@@ -20,7 +20,11 @@ import de.gigaworks.seatbidding.persistence.TokenLedgerRepository;
 import de.gigaworks.seatbidding.persistence.EmployeeSeatPreferenceRepository;
 import de.gigaworks.seatbidding.persistence.EmployeeSeatPreferenceRevisionRepository;
 import de.gigaworks.seatbidding.persistence.FloorPlanVersionSeatRepository;
+import de.gigaworks.seatbidding.persistence.GuestSeatPreferenceRepository;
+import de.gigaworks.seatbidding.persistence.GuestSeatPreferenceRevisionRepository;
 import de.gigaworks.seatbidding.persistence.PhysicalSeatEntity;
+import de.gigaworks.seatbidding.persistence.ReservedGuestSeatAssignmentEntity;
+import de.gigaworks.seatbidding.persistence.ReservedGuestSeatAssignmentRepository;
 import de.gigaworks.seatbidding.round.RoundFactory;
 import de.gigaworks.seatbidding.tokens.BalanceCalculator;
 
@@ -80,6 +84,15 @@ public class RoundProcessingService {
     EmployeeSeatPreferenceRepository preferences;
 
     @Inject
+    GuestSeatPreferenceRevisionRepository guestPreferenceRevisions;
+
+    @Inject
+    GuestSeatPreferenceRepository guestPreferences;
+
+    @Inject
+    ReservedGuestSeatAssignmentRepository guestAssignments;
+
+    @Inject
     SeatPlacementOptimizer seatPlacementOptimizer;
 
     @Inject
@@ -118,7 +131,7 @@ public class RoundProcessingService {
                 roundBids.stream().map(bid -> new RoundAllocation.Bid(bid.roundDate.id, bid.roundDate.targetDate,
                         bid.id, bid.participation.employee.id, bid.tokens, bid.attendancePeriod)).toList());
 
-        var placement = placeSeats(round, solution);
+        var placement = placeSeats(round, solution, datesById, reservationByDate);
 
         for (var result : solution.results()) {
             var unit = new AllocationUnitEntity();
@@ -150,7 +163,7 @@ public class RoundProcessingService {
                 assignment.tieGroup = null;
                 assignment.drawValue = null;
                 assignment.algorithmVersion = round.floorPlanVersion == null ? result.algorithmVersion()
-                        : "v5-floor-plan";
+                        : "v6-floor-plan-token-guests";
                 assignments.persist(assignment);
             }
         }
@@ -189,7 +202,7 @@ public class RoundProcessingService {
         var audit = new RoundAllocationAuditEntity();
         audit.round = round;
         audit.algorithmVersion = round.floorPlanVersion == null ? RoundAllocation.ALGORITHM_VERSION
-                : "v5-floor-plan";
+                : "v6-floor-plan-token-guests";
         audit.inputFingerprint = solution.inputFingerprint();
         audit.objectiveSummary = objectiveSummary(solution.objective());
         audit.pairingAudit = solution.pairingAudit();
@@ -204,12 +217,15 @@ public class RoundProcessingService {
     }
 
     private PlacementAudit placeSeats(de.gigaworks.seatbidding.persistence.BiddingRoundEntity round,
-            RoundAllocation.Solution solution) {
+            RoundAllocation.Solution solution,
+            Map<Long, de.gigaworks.seatbidding.persistence.RoundDateEntity> datesById,
+            Map<java.time.LocalDate, de.gigaworks.seatbidding.persistence.SeatReservationEntity> reservationByDate) {
         if (round.floorPlanVersion == null) {
             return PlacementAudit.empty();
         }
         var seatEntities = floorPlanSeats.findActiveForVersion(round.floorPlanVersion.id).stream()
                 .map(value -> value.physicalSeat).toList();
+        var activeSeatIds = seatEntities.stream().map(value -> value.id).collect(Collectors.toSet());
         var employeeIds = solution.results().stream().filter(RoundAllocation.Result::assigned)
                 .flatMap(value -> value.members().stream()).map(RoundAllocation.MemberResult::employeeId)
                 .collect(java.util.stream.Collectors.toSet());
@@ -219,22 +235,60 @@ public class RoundProcessingService {
             preferenceRevisions.findAtCutoff(employeeId, round.floorPlanVersion.floorPlan.id, round.cutoffAt)
                     .ifPresent(revision -> {
                         revisions.put(employeeId, revision.revisionNo);
-                        var effective = preferences.findForRevision(revision.id).stream().collect(
+                        var effective = preferences.findForRevision(revision.id).stream()
+                                .filter(value -> activeSeatIds.contains(value.physicalSeat.id)).collect(
                                 Collectors.toMap(value -> value.physicalSeat.id, value -> (int) value.stars));
                         if (!effective.isEmpty()) {
                             ratings.put(employeeId, effective);
                         }
                     });
         }
+        var guestRevision = guestPreferenceRevisions.findAtCutoff(round.floorPlanVersion.floorPlan.id, round.cutoffAt)
+                .orElse(null);
+        Map<Long, Integer> guestRatings = guestRevision == null ? Map.of()
+                : guestPreferences.findForRevision(guestRevision.id).stream()
+                        .filter(value -> activeSeatIds.contains(value.physicalSeat.id)).collect(
+                        Collectors.toMap(value -> value.physicalSeat.id, value -> (int) value.stars));
         Map<String, PhysicalSeatEntity> byUnit = new HashMap<>();
         var selectionValues = new java.util.ArrayList<String>();
-        for (var date : solution.results().stream().map(RoundAllocation.Result::dateId).distinct().toList()) {
+        var dateAudits = new java.util.ArrayList<String>();
+        for (var date : datesById.keySet().stream().sorted().toList()) {
             var successful = solution.results().stream().filter(value -> value.dateId() == date && value.assigned())
                     .toList();
             var result = seatPlacementOptimizer.place(successful, seatEntities, ratings);
             result.byFairnessIdentity().forEach((identity, seat) -> byUnit.put(date + "|" + identity, seat));
-            selectionValues.add(date + ":" + result.selectionValue());
+            if (result.mappingSelectionValue() != null) {
+                selectionValues.add(date + ":" + result.mappingSelectionValue());
+            }
+            var used = new java.util.HashSet<>(result.byFairnessIdentity().values());
+            var roundDate = datesById.get(date);
+            var reservation = reservationByDate.get(roundDate.targetDate);
+            var selectedGuests = new java.util.ArrayList<PhysicalSeatEntity>();
+            if (reservation != null) {
+                for (var seat : GuestSeatSelector.select(seatEntities, used, guestRatings,
+                        reservation.reservedSeatCount)) {
+                    var assignment = new ReservedGuestSeatAssignmentEntity();
+                    assignment.roundDate = roundDate;
+                    assignment.reservation = reservation;
+                    assignment.physicalSeat = seat;
+                    guestAssignments.persist(assignment);
+                    selectedGuests.add(seat);
+                }
+            }
+            String priority = result.priorityOrder().stream().map(value -> "\"" + value + "\"")
+                    .collect(Collectors.joining(","));
+            String satisfaction = result.satisfactionKeys().entrySet().stream().sorted(Map.Entry.comparingByKey())
+                    .map(value -> "\"" + value.getKey() + "\":\"" + value.getValue() + "\"")
+                    .collect(Collectors.joining(","));
+            String guestSeats = selectedGuests.stream().map(value -> Long.toString(value.id))
+                    .collect(Collectors.joining(","));
+            dateAudits.add("{\"dateId\":" + date + ",\"priorityOrder\":[" + priority
+                    + "],\"prioritySelection\":\"" + result.prioritySelectionValue()
+                    + "\",\"satisfactionKeys\":{" + satisfaction + "},\"mappingSelection\":"
+                    + (result.mappingSelectionValue() == null ? "null" : "\"" + result.mappingSelectionValue() + "\"")
+                    + ",\"guestSeats\":[" + guestSeats + "]}");
         }
+        guestAssignments.flush();
         String canonical = byUnit.entrySet().stream().sorted(Map.Entry.comparingByKey())
                 .map(value -> value.getKey() + "=" + value.getValue().id).collect(Collectors.joining(","));
         String ratingInput = ratings.entrySet().stream().sorted(Map.Entry.comparingByKey())
@@ -243,13 +297,21 @@ public class RoundProcessingService {
                         .collect(Collectors.joining(";"))).collect(Collectors.joining(","));
         String seatInput = seatEntities.stream().sorted(java.util.Comparator.comparingInt(value -> value.seatNumber))
                 .map(value -> value.id + "=" + value.seatNumber).collect(Collectors.joining(","));
-        String input = "version=" + round.floorPlanVersion.id + "|seats=" + seatInput + "|ratings=" + ratingInput;
+        String guestRatingInput = guestRatings.entrySet().stream().sorted(Map.Entry.comparingByKey())
+                .map(value -> value.getKey() + "=" + value.getValue()).collect(Collectors.joining(";"));
+        String input = "version=" + round.floorPlanVersion.id + "|seats=" + seatInput + "|ratings=" + ratingInput
+                + "|guestRevision=" + (guestRevision == null ? 0 : guestRevision.revisionNo)
+                + "|guestRatings=" + guestRatingInput;
         String revisionsJson = revisions.entrySet().stream().sorted(Map.Entry.comparingByKey())
                 .map(value -> "\"" + value.getKey() + "\":" + value.getValue()).collect(Collectors.joining(","));
         return new PlacementAudit(Map.copyOf(byUnit), AllocationFingerprints.seatPlacement(input),
-                "{\"objective\":\"max-min-ratings-then-token-priority\"}",
-                "{\"version\":\"v1\",\"preferenceRevisions\":{" + revisionsJson + "},\"mapping\":\""
-                        + canonical + "\",\"ratings\":\"" + ratingInput + "\"}",
+                "{\"objective\":\"strict-token-priority-lexicographic-satisfaction\",\"dates\":["
+                        + String.join(",", dateAudits) + "]}",
+                "{\"version\":\"v2\",\"preferenceRevisions\":{" + revisionsJson
+                        + "},\"guestPreferenceRevision\":" + (guestRevision == null ? "null" : guestRevision.revisionNo)
+                        + ",\"mapping\":\"" + canonical + "\",\"ratings\":\"" + ratingInput
+                        + "\",\"guestRatings\":\"" + guestRatingInput + "\",\"dates\":["
+                        + String.join(",", dateAudits) + "]}",
                 String.join(",", selectionValues));
     }
 

@@ -1,0 +1,77 @@
+databaseChangeLog:
+  - changeSet:
+      id: 007-guest-seat-preferences
+      author: codex
+      changes:
+        - createTable:
+            tableName: guest_seat_preference_revision
+            columns:
+              - column: { name: id, type: bigint, autoIncrement: true, constraints: { primaryKey: true, primaryKeyName: pk_guest_seat_preference_revision, nullable: false } }
+              - column: { name: floor_plan_id, type: bigint, constraints: { nullable: false } }
+              - column: { name: revision_no, type: bigint, constraints: { nullable: false } }
+              - column: { name: created_by_employee_id, type: bigint, constraints: { nullable: false } }
+              - column: { name: created_at, type: timestamptz, constraints: { nullable: false } }
+        - createTable:
+            tableName: guest_seat_preference
+            columns:
+              - column: { name: id, type: bigint, autoIncrement: true, constraints: { primaryKey: true, primaryKeyName: pk_guest_seat_preference, nullable: false } }
+              - column: { name: revision_id, type: bigint, constraints: { nullable: false } }
+              - column: { name: physical_seat_id, type: bigint, constraints: { nullable: false } }
+              - column: { name: stars, type: smallint, constraints: { nullable: false } }
+        - createTable:
+            tableName: reserved_guest_seat_assignment
+            columns:
+              - column: { name: id, type: bigint, autoIncrement: true, constraints: { primaryKey: true, primaryKeyName: pk_reserved_guest_seat_assignment, nullable: false } }
+              - column: { name: round_date_id, type: bigint, constraints: { nullable: false } }
+              - column: { name: seat_reservation_id, type: bigint, constraints: { nullable: false } }
+              - column: { name: physical_seat_id, type: bigint, constraints: { nullable: false } }
+              - column: { name: created_at, type: timestamptz, defaultValueComputed: now(), constraints: { nullable: false } }
+        - sql:
+            comment: Add guest preference and anonymous reserved-seat constraints.
+            splitStatements: false
+            sql: |
+              ALTER TABLE guest_seat_preference_revision ADD CONSTRAINT fk_guest_preference_revision_plan FOREIGN KEY (floor_plan_id) REFERENCES floor_plan(id);
+              ALTER TABLE guest_seat_preference_revision ADD CONSTRAINT fk_guest_preference_revision_creator FOREIGN KEY (created_by_employee_id) REFERENCES employee(id);
+              ALTER TABLE guest_seat_preference ADD CONSTRAINT fk_guest_preference_revision FOREIGN KEY (revision_id) REFERENCES guest_seat_preference_revision(id);
+              ALTER TABLE guest_seat_preference ADD CONSTRAINT fk_guest_preference_seat FOREIGN KEY (physical_seat_id) REFERENCES physical_seat(id);
+              ALTER TABLE reserved_guest_seat_assignment ADD CONSTRAINT fk_guest_assignment_round_date FOREIGN KEY (round_date_id) REFERENCES round_date(id);
+              ALTER TABLE reserved_guest_seat_assignment ADD CONSTRAINT fk_guest_assignment_reservation FOREIGN KEY (seat_reservation_id) REFERENCES seat_reservation(id);
+              ALTER TABLE reserved_guest_seat_assignment ADD CONSTRAINT fk_guest_assignment_seat FOREIGN KEY (physical_seat_id) REFERENCES physical_seat(id);
+              ALTER TABLE guest_seat_preference ADD CONSTRAINT ck_guest_preference_stars CHECK (stars BETWEEN 1 AND 3);
+              ALTER TABLE guest_seat_preference_revision ADD CONSTRAINT ck_guest_preference_revision_number CHECK (revision_no > 0);
+              CREATE UNIQUE INDEX uq_guest_preference_revision_number ON guest_seat_preference_revision (floor_plan_id, revision_no);
+              CREATE UNIQUE INDEX uq_guest_preference_item ON guest_seat_preference (revision_id, physical_seat_id);
+              CREATE UNIQUE INDEX uq_guest_preference_three_star ON guest_seat_preference (revision_id) WHERE stars = 3;
+              CREATE UNIQUE INDEX uq_reserved_guest_seat ON reserved_guest_seat_assignment (round_date_id, physical_seat_id);
+              CREATE INDEX ix_reserved_guest_reservation ON reserved_guest_seat_assignment (seat_reservation_id);
+              CREATE FUNCTION enforce_guest_employee_seat_disjoint() RETURNS trigger AS $$
+              BEGIN
+                IF NEW.physical_seat_id IS NULL THEN
+                  RETURN NEW;
+                END IF;
+                PERFORM 1 FROM round_date WHERE id = NEW.round_date_id FOR UPDATE;
+                IF TG_TABLE_NAME = 'reserved_guest_seat_assignment' THEN
+                  IF EXISTS (SELECT 1 FROM allocation_unit WHERE round_date_id = NEW.round_date_id
+                    AND physical_seat_id = NEW.physical_seat_id) THEN
+                    RAISE EXCEPTION 'physical seat is already assigned to an employee unit for this date';
+                  END IF;
+                ELSIF EXISTS (SELECT 1 FROM reserved_guest_seat_assignment WHERE round_date_id = NEW.round_date_id
+                  AND physical_seat_id = NEW.physical_seat_id) THEN
+                  RAISE EXCEPTION 'physical seat is already assigned to an anonymous guest for this date';
+                END IF;
+                RETURN NEW;
+              END;
+              $$ LANGUAGE plpgsql;
+              CREATE TRIGGER trg_guest_seat_disjoint BEFORE INSERT OR UPDATE OF round_date_id, physical_seat_id
+                ON reserved_guest_seat_assignment FOR EACH ROW EXECUTE FUNCTION enforce_guest_employee_seat_disjoint();
+              CREATE TRIGGER trg_employee_seat_disjoint BEFORE INSERT OR UPDATE OF round_date_id, physical_seat_id
+                ON allocation_unit FOR EACH ROW EXECUTE FUNCTION enforce_guest_employee_seat_disjoint();
+      rollback:
+        - sql:
+            sql: |
+              DROP TRIGGER IF EXISTS trg_employee_seat_disjoint ON allocation_unit;
+              DROP TRIGGER IF EXISTS trg_guest_seat_disjoint ON reserved_guest_seat_assignment;
+              DROP FUNCTION IF EXISTS enforce_guest_employee_seat_disjoint();
+        - dropTable: { tableName: reserved_guest_seat_assignment }
+        - dropTable: { tableName: guest_seat_preference }
+        - dropTable: { tableName: guest_seat_preference_revision }

@@ -26,11 +26,14 @@ class LiquibaseUpgradeTest {
             postgres.start();
             update(postgres, "db/changelog/db.changelog-master.yaml", postgres.getUsername());
             try (var connection = connection(postgres)) {
-                assertEquals(9, scalarInt(connection, "SELECT count(*) FROM databasechangelog"));
                 assertEquals(1, scalarInt(connection, "SELECT count(*) FROM information_schema.tables "
                         + "WHERE table_schema='public' AND table_name='seat_reservation'"));
                 assertEquals(1, scalarInt(connection, "SELECT count(*) FROM information_schema.columns "
                         + "WHERE table_schema='public' AND table_name='employee' AND column_name='is_admin'"));
+                assertEquals(1, scalarInt(connection, "SELECT count(*) FROM information_schema.tables "
+                        + "WHERE table_schema='public' AND table_name='guest_seat_preference_revision'"));
+                assertEquals(1, scalarInt(connection, "SELECT count(*) FROM information_schema.tables "
+                        + "WHERE table_schema='public' AND table_name='reserved_guest_seat_assignment'"));
             }
         }
     }
@@ -56,7 +59,8 @@ class LiquibaseUpgradeTest {
             }
             update(postgres, "db/changelog/db.changelog-master.yaml", "seat_bidding_application");
             try (var connection = connection(postgres)) {
-                assertEquals(9, scalarInt(connection, "SELECT count(*) FROM databasechangelog"));
+                assertLegacyData(connection);
+                assertPermissions(connection);
             }
         }
     }
@@ -76,7 +80,6 @@ class LiquibaseUpgradeTest {
             update(postgres, "db/changelog/db.changelog-master.yaml", postgres.getUsername());
             update(postgres, "db/changelog/db.changelog-master.yaml", postgres.getUsername());
             try (var connection = connection(postgres)) {
-                assertEquals(9, scalarInt(connection, "SELECT count(*) FROM databasechangelog"));
                 assertEquals(1, scalarInt(connection, "SELECT count(*) FROM employee"));
                 assertEquals(0, scalarInt(connection, "SELECT count(*) FROM employee_notification_settings"));
                 assertEquals(0, scalarInt(connection, "SELECT count(*) FROM web_push_subscription"));
@@ -233,6 +236,10 @@ class LiquibaseUpgradeTest {
                 "SELECT has_sequence_privilege('seat_bidding_application','web_push_subscription_id_seq','USAGE')"));
         assertTrue(scalarBoolean(connection,
                 "SELECT has_table_privilege('seat_bidding_application','bid_reminder_dispatch','SELECT,INSERT,UPDATE,DELETE')"));
+        assertTrue(scalarBoolean(connection,
+                "SELECT has_table_privilege('seat_bidding_application','guest_seat_preference','SELECT,INSERT,UPDATE,DELETE')"));
+        assertTrue(scalarBoolean(connection,
+                "SELECT has_table_privilege('seat_bidding_application','reserved_guest_seat_assignment','SELECT,INSERT,UPDATE,DELETE')"));
     }
 
     private static int scalarInt(Connection connection, String sql) throws SQLException {

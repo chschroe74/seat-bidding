@@ -3,6 +3,8 @@ package de.gigaworks.seatbidding.resource.impl;
 import de.gigaworks.seatbidding.dto.AdminFloorPlanResponse;
 import de.gigaworks.seatbidding.dto.ConfirmedRevisionRequest;
 import de.gigaworks.seatbidding.dto.FloorPlanSeatMutationRequest;
+import de.gigaworks.seatbidding.dto.GuestSeatPreferencesResponse;
+import de.gigaworks.seatbidding.dto.ReplaceGuestSeatPreferencesRequest;
 import de.gigaworks.seatbidding.dto.RevisionRequest;
 import de.gigaworks.seatbidding.exception.ApplicationProblem;
 import de.gigaworks.seatbidding.floorplan.FloorPlanService;
@@ -25,6 +27,10 @@ public class AdminFloorPlanResourceImpl implements AdminFloorPlanResource {
     public AdminFloorPlanResponse get() {
         return service.adminState();
     }
+
+    @Override public GuestSeatPreferencesResponse guestPreferences() { return service.guestPreferences(); }
+    @Override public GuestSeatPreferencesResponse replaceGuestPreferences(ReplaceGuestSeatPreferencesRequest request,
+            String csrfToken) { return service.replaceGuestPreferences(request); }
 
     @Override
     public Response upload(FileUpload file, String csrfToken) {

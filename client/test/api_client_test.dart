@@ -55,6 +55,54 @@ void main() {
             expect(auth.user?.isAdmin, isFalse);
         },
     );
+
+    test('floor-plan SVG URL is not prefixed with the API base path twice', () async {
+        final adapter = _FloorPlanAdapter();
+        final dio = Dio(BaseOptions(baseUrl: 'https://seat.test/api'))..httpClientAdapter = adapter;
+        final api = ApiClient(AuthService.testing(dio, _NoopCookieStore()));
+
+        final result = await api.floorPlanSvg('/api/floor-plan/versions/4/svg');
+
+        expect(result, <int>[60, 115, 118, 103, 47, 62]);
+        expect(adapter.requestPath, '/api/floor-plan/versions/4/svg');
+        expect(adapter.acceptHeader, 'image/svg+xml');
+    });
+
+    test('missing current floor plan is an optional absence', () async {
+        final dio = Dio(BaseOptions(baseUrl: 'https://seat.test/api'))
+            ..httpClientAdapter = _MissingFloorPlanAdapter();
+        final api = ApiClient(AuthService.testing(dio, _NoopCookieStore()));
+
+        expect(await api.currentFloorPlan(), isNull);
+    });
+
+    test('guest preferences replace the complete sparse rating set', () async {
+        final adapter = _GuestPreferencesAdapter();
+        final dio = Dio(BaseOptions(baseUrl: 'https://seat.test/api'))..httpClientAdapter = adapter;
+        final api = ApiClient(AuthService.testing(dio, _NoopCookieStore()));
+        final current = GuestSeatPreferences(
+            versionId: 7,
+            preferenceRevision: 3,
+            cutoffAt: DateTime.utc(2026, 10, 16),
+            serverTime: DateTime.utc(2026, 10, 15),
+            effectiveForCurrentRound: true,
+            seats: const [],
+        );
+
+        final saved = await api.replaceGuestSeatPreferences(current, const [
+            GuestSeatPreference(id: 10, number: 1, stars: 3),
+            GuestSeatPreference(id: 11, number: 2, stars: 0),
+        ]);
+
+        expect(adapter.requestData, {
+            'floorPlanVersionId': 7,
+            'preferenceRevision': 3,
+            'preferences': [
+                {'seatId': 10, 'stars': 3},
+            ],
+        });
+        expect(saved.preferenceRevision, 4);
+    });
 }
 
 class _TestAuthService extends AuthService {
@@ -149,6 +197,64 @@ class _ForbiddenAdminAdapter implements HttpClientAdapter {
             Headers.contentTypeHeader: [Headers.jsonContentType],
         },
     );
+    @override
+    void close({bool force = false}) {}
+}
+
+class _FloorPlanAdapter implements HttpClientAdapter {
+    String? requestPath;
+    String? acceptHeader;
+
+    @override
+    Future<ResponseBody> fetch(
+        RequestOptions options,
+        Stream<Uint8List>? requestStream,
+        Future<void>? cancelFuture,
+    ) async {
+        requestPath = options.uri.path;
+        acceptHeader = options.headers[Headers.acceptHeader] as String?;
+        return ResponseBody.fromBytes(
+            <int>[60, 115, 118, 103, 47, 62],
+            200,
+            headers: {Headers.contentTypeHeader: ['image/svg+xml']},
+        );
+    }
+
+    @override
+    void close({bool force = false}) {}
+}
+
+class _MissingFloorPlanAdapter implements HttpClientAdapter {
+    @override
+    Future<ResponseBody> fetch(
+        RequestOptions options,
+        Stream<Uint8List>? requestStream,
+        Future<void>? cancelFuture,
+    ) async => ResponseBody.fromString('', 404);
+
+    @override
+    void close({bool force = false}) {}
+}
+
+class _GuestPreferencesAdapter implements HttpClientAdapter {
+    Object? requestData;
+
+    @override
+    Future<ResponseBody> fetch(
+        RequestOptions options,
+        Stream<Uint8List>? requestStream,
+        Future<void>? cancelFuture,
+    ) async {
+        requestData = options.data;
+        return ResponseBody.fromString(
+            '{"floorPlanVersionId":7,"preferenceRevision":4,'
+            '"cutoffAt":"2026-10-16T00:00:00Z","serverTime":"2026-10-15T00:00:00Z",'
+            '"effectiveForCurrentRound":true,"seats":[]}',
+            200,
+            headers: {Headers.contentTypeHeader: ['application/json']},
+        );
+    }
+
     @override
     void close({bool force = false}) {}
 }

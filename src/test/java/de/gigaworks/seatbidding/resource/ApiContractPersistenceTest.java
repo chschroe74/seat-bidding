@@ -3,6 +3,7 @@ package de.gigaworks.seatbidding.resource;
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -391,6 +392,58 @@ class ApiContractPersistenceTest {
                 .then().statusCode(404).body("code", equalTo("RESERVATION_NOT_FOUND"));
         deleteWithSession("/api/admin/seat-reservations/" + reservationId, csrf, adminSession)
                 .then().statusCode(204);
+    }
+
+    @Test
+    void firstFloorPlanUploadCreatesACompleteSanitizedDraft() {
+        provision("floor-plan-admin@example.com", true, PASSWORD, true);
+        String session = login("floor-plan-admin@example.com", PASSWORD, ORIGIN, true)
+                .then().statusCode(200).extract().detailedCookie("seat_session").getValue();
+        var csrf = csrf();
+        byte[] svg = """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+                  <style type="text/css">svg { color: red; }</style>
+                  <defs><pattern id="hatch" patternUnits="userSpaceOnUse" width="10" height="10">
+                    <line x1="0" y1="0" x2="10" y2="10" stroke="#aaa"/>
+                  </pattern></defs>
+                  <rect width="100" height="100" fill="url(#hatch)"/>
+                </svg>
+                """.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+        String svgUrl = given().cookie("csrf-token", csrf.cookie).cookie("seat_session", session)
+                .header("X-CSRF-TOKEN", csrf.token)
+                .multiPart("file", "floor-plan.svg", svg, "image/svg+xml")
+                .post("/api/admin/floor-plan/draft/upload")
+                .then().statusCode(201)
+                .body("draft.status", equalTo("DRAFT"))
+                .body("draft.viewBox.width", equalTo(100))
+                .extract().jsonPath().getString("draft.svgUrl");
+
+        given().cookie("seat_session", session).get(svgUrl).then().statusCode(200)
+                .contentType("image/svg+xml")
+                .body(not(containsString("DOCTYPE")))
+                .body(not(containsString("<style")))
+                .body(containsString("<pattern"));
+        deleteWithSession("/api/admin/floor-plan/draft", csrf, session).then().statusCode(204);
+    }
+
+    @Test
+    void guestPreferenceProfileIsAdministratorOnlyAndAbsentWithoutFloorPlanMode() {
+        provision("guest-profile-admin@example.com", true, PASSWORD, true);
+        String adminSession = login("guest-profile-admin@example.com", PASSWORD, ORIGIN, true)
+                .then().statusCode(200).extract().detailedCookie("seat_session").getValue();
+        given().cookie("seat_session", adminSession)
+                .get("/api/admin/floor-plan/current/guest-preferences")
+                .then().statusCode(404).body("code", equalTo("FLOOR_PLAN_NOT_FOUND"));
+
+        provision("guest-profile-employee@example.com", true, PASSWORD, false);
+        String employeeSession = login("guest-profile-employee@example.com", PASSWORD, ORIGIN, true)
+                .then().statusCode(200).extract().detailedCookie("seat_session").getValue();
+        given().cookie("seat_session", employeeSession)
+                .get("/api/admin/floor-plan/current/guest-preferences")
+                .then().statusCode(403);
     }
 
     @Test

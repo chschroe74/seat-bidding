@@ -3,6 +3,8 @@ package de.gigaworks.seatbidding.resource;
 import de.gigaworks.seatbidding.dto.AdminFloorPlanResponse;
 import de.gigaworks.seatbidding.dto.ConfirmedRevisionRequest;
 import de.gigaworks.seatbidding.dto.FloorPlanSeatMutationRequest;
+import de.gigaworks.seatbidding.dto.GuestSeatPreferencesResponse;
+import de.gigaworks.seatbidding.dto.ReplaceGuestSeatPreferencesRequest;
 import de.gigaworks.seatbidding.dto.RevisionRequest;
 
 import org.jboss.resteasy.reactive.RestForm;
@@ -35,6 +37,23 @@ public interface AdminFloorPlanResource {
     @Operation(summary = "Get floor-plan administration state")
     @APIResponse(responseCode = "200")
     AdminFloorPlanResponse get();
+
+    @GET
+    @Path("/current/guest-preferences")
+    @Operation(summary = "Get the administrator-only anonymous guest seat preference profile")
+    @APIResponse(responseCode = "200")
+    @APIResponse(responseCode = "404")
+    GuestSeatPreferencesResponse guestPreferences();
+
+    @PUT
+    @Path("/current/guest-preferences")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Operation(summary = "Atomically replace the anonymous guest seat preference profile")
+    @APIResponse(responseCode = "200")
+    @APIResponse(responseCode = "400")
+    @APIResponse(responseCode = "409")
+    GuestSeatPreferencesResponse replaceGuestPreferences(@Valid ReplaceGuestSeatPreferencesRequest request,
+            @HeaderParam("X-CSRF-TOKEN") String csrfToken);
 
     @POST
     @Path("/draft/upload")

@@ -34,7 +34,11 @@ class ApiClient {
     );
 
     Future<Uint8List> floorPlanSvg(String url) async => Uint8List.fromList(
-        (await auth.dio.get<List<int>>(url, options: Options(responseType: ResponseType.bytes))).data!,
+        (await auth.dio.get<List<int>>(_apiRelativeUrl(url),
+            options: Options(
+                responseType: ResponseType.bytes,
+                headers: const {Headers.acceptHeader: 'image/svg+xml'},
+            ))).data!,
     );
 
     Future<FloorPlan> replaceSeatPreferences(FloorPlan plan, List<FloorPlanSeat> seats) async =>
@@ -128,6 +132,25 @@ class ApiClient {
 
     Future<AdminFloorPlan> adminFloorPlan() async => AdminFloorPlan.fromJson(
         (await auth.dio.get<Map<String, dynamic>>('/admin/floor-plan')).data!,
+    );
+
+    Future<GuestSeatPreferences> guestSeatPreferences() async => GuestSeatPreferences.fromJson(
+        (await auth.dio.get<Map<String, dynamic>>(
+            '/admin/floor-plan/current/guest-preferences',
+        )).data!,
+    );
+
+    Future<GuestSeatPreferences> replaceGuestSeatPreferences(GuestSeatPreferences current,
+        List<GuestSeatPreference> seats) async => GuestSeatPreferences.fromJson(
+        (await _adminMutation<Map<String, dynamic>>(() => auth.dio.put<Map<String, dynamic>>(
+            '/admin/floor-plan/current/guest-preferences',
+            data: {
+                'floorPlanVersionId': current.versionId,
+                'preferenceRevision': current.preferenceRevision,
+                'preferences': seats.where((seat) => seat.stars > 0)
+                    .map((seat) => {'seatId': seat.id, 'stars': seat.stars}).toList(),
+            },
+        ))).data!,
     );
 
     Future<AdminFloorPlan> uploadFloorPlan(Uint8List bytes) async => AdminFloorPlan.fromJson(
@@ -278,4 +301,13 @@ class ApiClient {
 
     static String _date(DateTime value) =>
             value.toIso8601String().substring(0, 10);
+
+    String _apiRelativeUrl(String url) {
+        final uri = Uri.parse(url);
+        final basePath = Uri.parse(auth.configuration.apiBasePath).path.replaceFirst(RegExp(r'/$'), '');
+        if (uri.hasScheme || uri.hasAuthority || !uri.path.startsWith('$basePath/')) {
+            throw FormatException('The server returned an invalid API resource URL.');
+        }
+        return uri.replace(path: uri.path.substring(basePath.length)).toString();
+    }
 }
