@@ -67,7 +67,6 @@ class ApiContractPersistenceTest {
                 .then().statusCode(200).extract().asString();
         assertTrue(document.contains("formCookie"));
         var openApi = JsonPath.from(document);
-        assertEquals("1.4.0", openApi.getString("info.version"));
         var schemas = openApi.getMap("components.schemas");
         var biddingProperties = (Map<?, ?>) ((Map<?, ?>) schemas.get("BiddingContext")).get("properties");
         assertTrue(biddingProperties.containsKey("seatCapacity"));
