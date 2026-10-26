@@ -37,8 +37,14 @@ class _FloorPlanScreenState extends State<FloorPlanScreen> {
         try {
             final loaded = widget.readOnly ? await widget.api.latestAssignmentsFloorPlan()
                 : await widget.api.currentFloorPlan();
-            final bytes = loaded == null ? null : await widget.api.floorPlanSvg(loaded.svgUrl);
-            if (mounted) setState(() { plan = loaded; svg = bytes; loading = false; dirty = false; });
+            if (!mounted) return;
+            setState(() { plan = loaded; svg = null; dirty = false; });
+            if (loaded == null) {
+                setState(() => loading = false);
+                return;
+            }
+            final bytes = await widget.api.floorPlanSvg(loaded.svgUrl);
+            if (mounted) setState(() { svg = bytes; loading = false; });
         } on DioException catch (failure) {
             if (mounted) setState(() { loading = false; error = _detail(failure); });
         }

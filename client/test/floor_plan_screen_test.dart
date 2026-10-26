@@ -32,6 +32,19 @@ void main() {
         expect(find.text('Seat 1'), findsNothing);
         expect(find.byTooltip('Expand seat list'), findsOneWidget);
     });
+
+    testWidgets('an SVG failure does not masquerade as a missing current floor plan', (tester) async {
+        final api = _BrokenSvgApi(AuthService.testing(Dio(), _NoopCookieStore()));
+        await tester.pumpWidget(MaterialApp(home: Scaffold(body: FloorPlanScreen(api: api))));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Seat preferences'), findsOneWidget);
+        expect(find.text('No floor plan is available for the current round.'), findsNothing);
+        expect(find.text('Seats (2)'), findsOneWidget);
+        await tester.drag(find.byType(ListView).first, const Offset(0, -800));
+        await tester.pump();
+        expect(find.text('The request failed. Check your connection and retry.'), findsOneWidget);
+    });
 }
 
 class _FloorPlanApi extends ApiClient {
@@ -57,6 +70,16 @@ class _FloorPlanApi extends ApiClient {
     Future<Uint8List> floorPlanSvg(String url) async => Uint8List.fromList(
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
         '<rect width="100" height="100" fill="white"/></svg>'.codeUnits,
+    );
+}
+
+class _BrokenSvgApi extends _FloorPlanApi {
+    _BrokenSvgApi(super.auth);
+
+    @override
+    Future<Uint8List> floorPlanSvg(String url) async => throw DioException(
+        requestOptions: RequestOptions(path: url),
+        response: Response<void>(requestOptions: RequestOptions(path: url), statusCode: 404),
     );
 }
 

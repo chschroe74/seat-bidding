@@ -459,11 +459,14 @@ public class FloorPlanService {
     @Transactional
     public FloorPlanVersionEntity authorizedVersion(long versionId) {
         var employee = identity.resolve();
+        var plan = plans.findSingleton().orElse(null);
+        var version = versions.findById(versionId);
+        if (plan != null && version != null && version.status == FloorPlanVersionStatus.PUBLISHED
+                && plan.activeVersion != null && plan.activeVersion.id.equals(versionId)) {
+            return version;
+        }
         if (employee.admin) {
-            var plan = plans.findSingleton().orElse(null);
-            var version = versions.findById(versionId);
             if (plan != null && version != null && (version.status == FloorPlanVersionStatus.DRAFT
-                    || plan.activeVersion != null && plan.activeVersion.id.equals(versionId)
                     || plan.pendingVersion != null && plan.pendingVersion.id.equals(versionId))) {
                 return version;
             }
