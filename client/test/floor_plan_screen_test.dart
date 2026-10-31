@@ -21,6 +21,13 @@ void main() {
         await tester.tap(find.text('Seat 1'));
         await tester.pump();
         expect(find.text('1 star'), findsOneWidget);
+        expect(
+            find.descendant(
+                of: find.byKey(const ValueKey('floor-plan-seat-1')),
+                matching: find.byIcon(Icons.star),
+            ),
+            findsOneWidget,
+        );
 
         final originalCardPosition = tester.getTopLeft(find.byType(Card));
         await tester.drag(find.text('Seats (2)'), const Offset(-80, 40));

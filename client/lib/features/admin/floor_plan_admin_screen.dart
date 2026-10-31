@@ -493,7 +493,10 @@ class _FloorPlanAdminScreenState extends State<FloorPlanAdminScreen> {
         final draggedPosition = draggingSeat == seat.id ? placementCandidate?.position : null;
         final centre = draggedPosition ?? Offset(seat.x * size.width, seat.y * size.height);
         final guestMarker = draft == null && guestPreferences?.versionId == shown.id;
+        final guestStars = guestMarker ? _guestStars(seat.id) : 0;
         final colors = Theme.of(context).colorScheme;
+        final markerForeground = seat.state == 'PENDING_REMOVAL'
+            ? colors.onErrorContainer : Colors.white;
         return Positioned(
             left: centre.dx - markerRadius,
             top: centre.dy - markerRadius,
@@ -518,16 +521,34 @@ class _FloorPlanAdminScreenState extends State<FloorPlanAdminScreen> {
                         onPressed: busy ? null : draft != null ? () => _markerTap(seat.id)
                             : guestMarker ? () => cycleGuestSeat(seat.id) : null,
                         tooltip: guestMarker
-                            ? 'Seat ${seat.number}, ${_guestStars(seat.id)} guest stars'
+                            ? 'Seat ${seat.number}, $guestStars guest stars'
                             : selectedSeat == seat.id ? 'Unselect seat ${seat.number}'
                             : 'Select seat ${seat.number}',
-                        icon: Text(guestMarker ? '${seat.number}\n${_guestStars(seat.id)}★' : '${seat.number}',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                                color: seat.state == 'PENDING_REMOVAL'
-                                    ? colors.onErrorContainer : Colors.white,
-                                fontWeight: FontWeight.bold,
-                            )),
+                        icon: guestMarker
+                            ? Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                    Text(
+                                        '${seat.number}',
+                                        style: TextStyle(color: markerForeground, fontWeight: FontWeight.bold),
+                                    ),
+                                    if (guestStars > 0)
+                                        Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                                for (var index = 0; index < guestStars; index++)
+                                                    Icon(Icons.star, size: 9, color: markerForeground),
+                                            ],
+                                        ),
+                                ],
+                            )
+                            : Text(
+                                '${seat.number}',
+                                style: TextStyle(
+                                    color: markerForeground,
+                                    fontWeight: FontWeight.bold,
+                                ),
+                            ),
                     ),
                 ),
             ),
