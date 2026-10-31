@@ -124,14 +124,14 @@ public class AssignmentQueryService {
                         a.allocationUnit.finalRank, a.allocationUnit.scoreTokens, employee.id,
                         employee.firstName, employee.lastName, a.bid.tokens, a.attendancePeriod,
                         a.assigned, a.displayRank, employee.id.equals(current.id),
-                        employee.id.equals(current.id) && a.allocationUnit.physicalSeat != null
-                                ? a.allocationUnit.physicalSeat.seatNumber : null);
+                        a.allocationUnit.physicalSeat == null ? null
+                                : a.allocationUnit.physicalSeat.seatNumber);
             }).toList();
             var currentOccupants = active.stream().map(value -> {
                 boolean self = value.employee.id.equals(current.id);
                 return new AssignmentsResponse.CurrentOccupant(value.id, value.employee.id,
                         value.employee.firstName, value.employee.lastName, value.attendancePeriod, value.sourceType,
-                        self && value.physicalSeat != null ? value.physicalSeat.seatNumber : null, self);
+                        value.physicalSeat == null ? null : value.physicalSeat.seatNumber, self);
             }).toList();
             int originalAssignedEmployeeCount = (int) results.stream().filter(a -> a.assigned).count();
             int originalOccupiedSeatCount = (int) results.stream().filter(a -> a.assigned)

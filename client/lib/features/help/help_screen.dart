@@ -29,7 +29,7 @@ class HelpScreen extends StatelessWidget {
             ),
             _Help(
                 'Floor-plan privacy',
-                'The floor plan shows seat numbers and your private ratings only. It never displays occupants, colleagues’ assigned seats, or colleagues’ preferences. Your own assigned seat number appears in the assignment list; use View floor plan there to locate it on the numbered map for that completed round.',
+                'The floor plan shows seat numbers and your private ratings only. It never displays occupant overlays or colleagues’ preferences. The authenticated assignment list shows each employee’s assigned seat number; use View floor plan there to locate numbered seats on the map for that completed round.',
             ),
             _Help(
                 'Assignment cards',

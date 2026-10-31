@@ -25,6 +25,7 @@ void main() {
                 assigned: true,
                 displayRank: 1,
                 isCurrentUser: true,
+                seatNumber: 7,
             ),
             const AssignmentParticipant(
                 allocationUnitId: 901,
@@ -39,6 +40,7 @@ void main() {
                 assigned: true,
                 displayRank: 2,
                 isCurrentUser: false,
+                seatNumber: 7,
             ),
         ];
         final api = _FakeApi(
@@ -55,6 +57,28 @@ void main() {
                         assignedEmployeeCount: 2,
                         assignableSeatCapacity: 1,
                         participants: participants,
+                        currentOccupants: const [
+                            CurrentOccupant(
+                                occupancyId: 1001,
+                                employeeId: 1,
+                                firstName: 'Ada',
+                                lastName: 'Morning',
+                                attendancePeriod: AttendancePeriod.morningOnly,
+                                sourceType: 'ORIGINAL_ASSIGNMENT',
+                                isCurrentUser: true,
+                                seatNumber: 7,
+                            ),
+                            CurrentOccupant(
+                                occupancyId: 1002,
+                                employeeId: 2,
+                                firstName: 'Bob',
+                                lastName: 'Afternoon',
+                                attendancePeriod: AttendancePeriod.afternoonOnly,
+                                sourceType: 'ORIGINAL_ASSIGNMENT',
+                                isCurrentUser: false,
+                                seatNumber: 7,
+                            ),
+                        ],
                     ),
                 ],
             ),
@@ -72,6 +96,7 @@ void main() {
         expect(find.text('Morning'), findsOneWidget);
         expect(find.text('Afternoon'), findsOneWidget);
         expect(find.text('2 employees assigned'), findsOneWidget);
+        expect(find.textContaining('Seat 7'), findsNWidgets(4));
     });
 
     testWidgets(

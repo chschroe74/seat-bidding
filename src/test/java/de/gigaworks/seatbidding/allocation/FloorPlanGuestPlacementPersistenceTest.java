@@ -1,9 +1,11 @@
 package de.gigaworks.seatbidding.allocation;
 
+import static io.restassured.RestAssured.given;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import de.gigaworks.seatbidding.auth.PasswordHasher;
 import de.gigaworks.seatbidding.persistence.AllocationUnitRepository;
 import de.gigaworks.seatbidding.persistence.AttendancePeriod;
 import de.gigaworks.seatbidding.persistence.BidEntity;
@@ -40,6 +42,7 @@ import de.gigaworks.seatbidding.round.RoundFactory;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.common.QuarkusTestResource;
 import io.quarkus.test.junit.QuarkusTest;
+import io.restassured.http.ContentType;
 import jakarta.inject.Inject;
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -51,6 +54,9 @@ import org.junit.jupiter.api.Test;
 @QuarkusTestResource(value = de.gigaworks.seatbidding.support.PostgresTestResource.class,
         restrictToAnnotatedClass = true)
 class FloorPlanGuestPlacementPersistenceTest {
+
+    private static final String VIEWER_EMAIL = "floor-plan-employee-1@example.com";
+    private static final String PASSWORD = "a valid long password with spaces";
 
     @Inject BiddingRoundRepository rounds;
     @Inject RoundDateRepository dates;
@@ -71,6 +77,7 @@ class FloorPlanGuestPlacementPersistenceTest {
     @Inject RoundAllocationAuditRepository audits;
     @Inject RoundFactory roundFactory;
     @Inject RoundProcessingService processing;
+    @Inject PasswordHasher passwordHasher;
 
     @Test
     void employeesArePlacedFirstAndGuestRatingSelectsFromOnlyRemainingSeats() {
@@ -164,6 +171,23 @@ class FloorPlanGuestPlacementPersistenceTest {
             assertEquals("v6-floor-plan-token-guests", audits.findForRound(completed.id).orElseThrow().algorithmVersion);
             assertTrue(audits.findForRound(completed.id).orElseThrow().seatPlacementAudit.contains("guestSeats"));
         });
+        String session = given().contentType(ContentType.URLENC)
+                .formParam("j_username", VIEWER_EMAIL).formParam("j_password", PASSWORD)
+                .header("Origin", "https://seat.test")
+                .header("X-Forwarded-Proto", "https")
+                .header("X-Forwarded-For", "203.0.113.56")
+                .redirects().follow(false)
+                .post("/j_security_check").then().statusCode(200)
+                .extract().detailedCookie("seat_session").getValue();
+        var published = given().cookie("seat_session", session)
+                .get("/api/assignments/latest").then().statusCode(200)
+                .extract().jsonPath();
+        assertEquals(java.util.List.of(1, 2, 3), published
+                .getList("days[0].originalParticipants.findAll { it.assigned }.seatNumber", Integer.class)
+                .stream().sorted().toList());
+        assertEquals(java.util.List.of(1, 2, 3), published
+                .getList("days[0].currentOccupants.seatNumber", Integer.class)
+                .stream().sorted().toList());
         assertThrows(RuntimeException.class, () -> QuarkusTransaction.requiringNew().run(() -> {
             var completed = rounds.findLatestCompleted().orElseThrow();
             var employeeUnit = units.find("roundDate.round.id = ?1 and assigned = true", completed.id)
@@ -183,6 +207,8 @@ class FloorPlanGuestPlacementPersistenceTest {
         employee.firstName = "Test";
         employee.lastName = "Employee";
         employee.enabled = true;
+        employee.passwordHash = passwordHasher.hash(PASSWORD);
+        employee.passwordSetAt = Instant.now();
         employees.persistAndFlush(employee);
         return employee;
     }
