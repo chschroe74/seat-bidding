@@ -9,6 +9,7 @@ import java.util.List;
 public record NotificationSettingsResponse(
         boolean bidRemindersEnabled,
         ReminderStartWeekday bidReminderStartWeekday,
+        boolean seatOfferNotificationsEnabled,
         Schedule schedule,
         String webPushApplicationServerKey,
         CurrentRound currentRound,

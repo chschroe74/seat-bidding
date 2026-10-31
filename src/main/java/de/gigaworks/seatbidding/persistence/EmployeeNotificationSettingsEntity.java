@@ -33,4 +33,7 @@ public class EmployeeNotificationSettingsEntity extends AuditedEntity {
     @Column(name = "bid_reminder_start_weekday", nullable = false, length = 16)
     public ReminderStartWeekday bidReminderStartWeekday = ReminderStartWeekday.MONDAY;
 
+    @Column(name = "seat_offer_notifications_enabled", nullable = false)
+    public boolean seatOfferNotificationsEnabled;
+
 }

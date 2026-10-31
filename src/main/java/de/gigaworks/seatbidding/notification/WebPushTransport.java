@@ -4,7 +4,8 @@ public interface WebPushTransport {
 
     SendResult send(Message message);
 
-    record Message(long roundId, String endpoint, String p256dh, String auth, String payload, String topic) {
+    record Message(long roundId, String endpoint, String p256dh, String auth, String payload, String topic,
+            Integer timeToLiveSeconds, boolean urgent) {
     }
 
     record SendResult(PushDeliveryOutcome outcome, Integer providerStatus) {

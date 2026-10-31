@@ -12,4 +12,6 @@ public class AssignmentFloorPlanResourceImpl implements AssignmentFloorPlanResou
     @Inject FloorPlanService service;
 
     @Override public FloorPlanResponse get() { return service.latestAssignments(); }
+
+    @Override public FloorPlanResponse getRound(long roundId) { return service.assignments(roundId); }
 }

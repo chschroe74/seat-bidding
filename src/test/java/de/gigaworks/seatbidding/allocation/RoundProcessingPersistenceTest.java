@@ -15,8 +15,11 @@ import de.gigaworks.seatbidding.persistence.RoundDateRepository;
 import de.gigaworks.seatbidding.persistence.RoundAllocationAuditRepository;
 import de.gigaworks.seatbidding.persistence.RoundParticipationEntity;
 import de.gigaworks.seatbidding.persistence.RoundParticipationRepository;
+import de.gigaworks.seatbidding.persistence.RoundDateCapacityStateRepository;
+import de.gigaworks.seatbidding.persistence.OccupancyStatus;
 import de.gigaworks.seatbidding.persistence.RoundStatus;
 import de.gigaworks.seatbidding.persistence.SeatAssignmentRepository;
+import de.gigaworks.seatbidding.persistence.SeatOccupancyRepository;
 import de.gigaworks.seatbidding.persistence.SeatReservationEntity;
 import de.gigaworks.seatbidding.persistence.SeatReservationRepository;
 import de.gigaworks.seatbidding.persistence.TokenLedgerRepository;
@@ -44,6 +47,8 @@ class RoundProcessingPersistenceTest {
     @Inject SeatReservationRepository reservations;
     @Inject RoundAllocationAuditRepository allocationAudits;
     @Inject TokenLedgerRepository ledger;
+    @Inject RoundDateCapacityStateRepository capacityStates;
+    @Inject SeatOccupancyRepository occupancies;
     @Inject RoundFactory roundFactory;
     @Inject RoundProcessingService processing;
 
@@ -107,6 +112,12 @@ class RoundProcessingPersistenceTest {
             var results = assignments.findForDate(day.id);
             assertEquals(4, results.size());
             assertEquals(3, results.stream().filter(a -> a.assigned).count());
+            var capacityState = capacityStates.findForDate(day.id).orElseThrow();
+            assertEquals(3, capacityState.morningOccupied);
+            assertEquals(3, capacityState.afternoonOccupied);
+            assertEquals(3, occupancies.count("roundDate.id = ?1 and status = ?2",
+                    day.id, OccupancyStatus.ACTIVE));
+            assertEquals(3, occupancies.count("roundDate.id = ?1 and originalSeatAssignment is not null", day.id));
             assertTrue(results.stream().allMatch(a -> a.tokenRank >= 1));
             assertTrue(results.stream().allMatch(a -> "v4".equals(a.algorithmVersion)));
             assertTrue(results.stream().allMatch(a -> a.drawValue == null && a.tieGroup == null));

@@ -20,8 +20,20 @@ void main() {
             expect(find.textContaining('do not change your tokens'), findsOneWidget);
             await tester.scrollUntilVisible(find.text('Assignment cards'), 200);
             expect(find.textContaining('Reserved seats reduce'), findsAtLeast(1));
+            for (final title in [
+                'Relinquishing an assignment',
+                'Waiting-list offers',
+                'Open booking',
+                'Choosing a late numbered seat',
+            ]) {
+                await tester.scrollUntilVisible(find.text(title), 200);
+                expect(find.text(title), findsOneWidget);
+            }
             await tester.scrollUntilVisible(find.text('Bid reminders'), 200);
             expect(find.text('Bid reminders'), findsOneWidget);
+            await tester.scrollUntilVisible(find.text('Seat-offer notifications'), 200);
+            expect(find.textContaining('does not reserve capacity'), findsOneWidget);
+            await tester.scrollUntilVisible(find.text('Web Push on your devices'), 200);
             expect(
                 find.textContaining('add the web app to the Home Screen'),
                 findsOneWidget,

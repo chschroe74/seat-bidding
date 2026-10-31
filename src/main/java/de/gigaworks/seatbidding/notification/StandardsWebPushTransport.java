@@ -56,7 +56,9 @@ public class StandardsWebPushTransport implements WebPushTransport {
                     Base64.getUrlDecoder().decode(message.auth()));
             var request = HttpRequest.newBuilder(endpoint).timeout(requestTimeout)
                     .POST(HttpRequest.BodyPublishers.ofByteArray(body));
-            headers(webPush, endpoint, timeToLiveSeconds, message.topic()).forEach(request::header);
+            int ttl = message.timeToLiveSeconds() == null ? timeToLiveSeconds
+                    : Math.min(timeToLiveSeconds, Math.max(0, message.timeToLiveSeconds()));
+            headers(webPush, endpoint, ttl, message.topic(), message.urgent()).forEach(request::header);
             int status = client.send(request.build(), HttpResponse.BodyHandlers.discarding()).statusCode();
             var result = classify(status);
             if (result.outcome() != PushDeliveryOutcome.ACCEPTED) {
@@ -78,7 +80,13 @@ public class StandardsWebPushTransport implements WebPushTransport {
     }
 
     static Map<String, String> headers(WebPush webPush, URI endpoint, int timeToLiveSeconds, String topic) {
-        return webPush.getHeaders(endpoint.toASCIIString(), timeToLiveSeconds, topic, WebPush.Urgency.Normal);
+        return headers(webPush, endpoint, timeToLiveSeconds, topic, false);
+    }
+
+    static Map<String, String> headers(WebPush webPush, URI endpoint, int timeToLiveSeconds, String topic,
+            boolean urgent) {
+        return webPush.getHeaders(endpoint.toASCIIString(), timeToLiveSeconds, topic,
+                urgent ? WebPush.Urgency.High : WebPush.Urgency.Normal);
     }
 
     static SendResult classify(int status) {

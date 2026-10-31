@@ -116,6 +116,8 @@ void main() {
                     )
                     .first,
         );
+        await tester.drag(find.byType(ListView), const Offset(0, -100));
+        await tester.pumpAndSettle();
         await tester.tap(clearButton);
         await tester.pump();
 

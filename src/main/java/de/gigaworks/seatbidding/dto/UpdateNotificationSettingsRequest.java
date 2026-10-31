@@ -6,5 +6,6 @@ import jakarta.validation.constraints.NotNull;
 
 public record UpdateNotificationSettingsRequest(
         @NotNull Boolean bidRemindersEnabled,
-        @NotNull ReminderStartWeekday bidReminderStartWeekday) {
+        @NotNull ReminderStartWeekday bidReminderStartWeekday,
+        @NotNull Boolean seatOfferNotificationsEnabled) {
 }

@@ -10,11 +10,13 @@ import com.interaso.webpush.VapidKeys;
 import com.interaso.webpush.WebPush;
 import de.gigaworks.seatbidding.exception.ApplicationProblem;
 import de.gigaworks.seatbidding.exception.ConfigurationException;
+import de.gigaworks.seatbidding.persistence.AttendancePeriod;
 import io.quarkus.scheduler.Scheduled;
 import java.net.InetAddress;
 import java.net.URI;
 import java.time.DayOfWeek;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalTime;
 import java.util.Base64;
 import java.util.List;
@@ -60,6 +62,23 @@ class ReminderPrimitivesTest {
         assertEquals("/settings/reminders/skip?roundId=42", payload.get("suppressionRoute").textValue());
         assertFalse(payload.toString().contains("email"));
         assertFalse(payload.toString().contains("tokens"));
+    }
+
+    @Test
+    void seatOfferPayloadContainsSafeContextButNoPriceOrColleagueData() throws Exception {
+        var builder = new SeatOfferPayloadBuilder();
+        builder.objectMapper = new ObjectMapper();
+
+        var payload = new ObjectMapper().readTree(builder.build(7, 42,
+                LocalDate.of(2026, 11, 3), AttendancePeriod.MORNING_ONLY));
+
+        assertEquals("Seat available", payload.get("title").textValue());
+        assertEquals(7, payload.get("candidateId").longValue());
+        assertEquals("/assignments?roundId=42&date=2026-11-03", payload.get("route").textValue());
+        assertTrue(payload.get("body").textValue().contains("Morning"));
+        assertFalse(payload.toString().contains("tokens"));
+        assertFalse(payload.toString().contains("employee"));
+        assertFalse(payload.toString().contains("balance"));
     }
 
     @Test

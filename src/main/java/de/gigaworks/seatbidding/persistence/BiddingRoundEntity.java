@@ -46,6 +46,9 @@ public class BiddingRoundEntity extends AuditedEntity {
     @Column(name = "seat_capacity", nullable = false)
     public int seatCapacity;
 
+    @Column(name = "minimum_open_booking_price", nullable = false)
+    public int minimumOpenBookingPrice;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "capacity_source", nullable = false, length = 20)
     public CapacitySource capacitySource = CapacitySource.CONFIGURATION;

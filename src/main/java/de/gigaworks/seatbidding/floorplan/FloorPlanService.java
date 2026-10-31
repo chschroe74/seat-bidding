@@ -398,6 +398,24 @@ public class FloorPlanService {
     }
 
     @Transactional
+    public FloorPlanResponse assignments(long roundId) {
+        var employee = identity.resolve();
+        var round = rounds.findById(roundId);
+        if (round == null || round.status != de.gigaworks.seatbidding.persistence.RoundStatus.COMPLETED
+                || round.floorPlanVersion == null) {
+            throw ApplicationProblem.notFound("FLOOR_PLAN_NOT_FOUND", "The completed round has no floor plan.");
+        }
+        var latest = rounds.findLatestCompleted().orElse(null);
+        boolean latestRound = latest != null && latest.id.equals(round.id);
+        boolean actionable = roundDates.findForRound(round.id).stream().anyMatch(value -> clock.instant().isBefore(
+                value.targetDate.plusDays(1).atStartOfDay(java.time.ZoneId.of(round.scheduleZone)).toInstant()));
+        if (!latestRound && !actionable) {
+            throw ApplicationProblem.notFound("FLOOR_PLAN_NOT_FOUND", "The completed floor plan is no longer addressable.");
+        }
+        return employeeResponse(round, employee.id, false);
+    }
+
+    @Transactional
     public FloorPlanResponse replacePreferences(ReplaceSeatPreferencesRequest request) {
         var employee = identity.resolve();
         var visibleRound = rounds.findOpen().filter(value -> value.floorPlanVersion != null).orElseThrow(() ->

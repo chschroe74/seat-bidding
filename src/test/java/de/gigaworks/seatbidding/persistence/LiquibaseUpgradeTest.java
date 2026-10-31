@@ -34,6 +34,44 @@ class LiquibaseUpgradeTest {
                         + "WHERE table_schema='public' AND table_name='guest_seat_preference_revision'"));
                 assertEquals(1, scalarInt(connection, "SELECT count(*) FROM information_schema.tables "
                         + "WHERE table_schema='public' AND table_name='reserved_guest_seat_assignment'"));
+                assertEquals(1, scalarInt(connection, "SELECT count(*) FROM information_schema.tables "
+                        + "WHERE table_schema='public' AND table_name='seat_occupancy'"));
+                assertEquals(1, scalarInt(connection, "SELECT count(*) FROM information_schema.tables "
+                        + "WHERE table_schema='public' AND table_name='released_capacity_offer'"));
+            }
+        }
+    }
+
+    @Test
+    void upgradesCompleteVersion141SchemaWithoutSyntheticBusinessEvents() throws Exception {
+        try (var postgres = new PostgreSQLContainer<>("postgres:18-alpine")
+                .withDatabaseName("seat_bidding_v141_upgrade")
+                .withUsername("seat_bidding")
+                .withPassword("seat_bidding")) {
+            postgres.start();
+            update(postgres, "db/changelog/db.changelog-v1.4.1-baseline.yaml", postgres.getUsername());
+            try (var connection = connection(postgres); var statement = connection.createStatement()) {
+                statement.executeUpdate("INSERT INTO employee(email,first_name,last_name) "
+                        + "VALUES ('preserved@example.com','Preserved','Employee')");
+                statement.executeUpdate("INSERT INTO employee_notification_settings"
+                        + "(employee_id,bid_reminders_enabled,bid_reminder_start_weekday) "
+                        + "SELECT id,false,'MONDAY' FROM employee WHERE email='preserved@example.com'");
+            }
+
+            update(postgres, "db/changelog/db.changelog-master.yaml", postgres.getUsername());
+            update(postgres, "db/changelog/db.changelog-master.yaml", postgres.getUsername());
+
+            try (var connection = connection(postgres)) {
+                assertEquals(1, scalarInt(connection,
+                        "SELECT count(*) FROM employee WHERE email='preserved@example.com'"));
+                assertEquals(1, scalarInt(connection,
+                        "SELECT count(*) FROM employee_notification_settings "
+                                + "WHERE seat_offer_notifications_enabled=false"));
+                assertEquals(0, scalarInt(connection, "SELECT count(*) FROM assignment_relinquishment"));
+                assertEquals(0, scalarInt(connection, "SELECT count(*) FROM relinquishment_credit"));
+                assertEquals(0, scalarInt(connection, "SELECT count(*) FROM released_capacity_offer"));
+                assertEquals(0, scalarInt(connection, "SELECT count(*) FROM post_allocation_booking"));
+                assertEquals(0, scalarInt(connection, "SELECT count(*) FROM seat_offer_notification_dispatch"));
             }
         }
     }

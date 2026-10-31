@@ -68,6 +68,14 @@ class _SeatBiddingAppState extends State<SeatBiddingApp> {
                         builder: (context, state) => FloorPlanScreen(api: api, readOnly: true),
                     ),
                     GoRoute(
+                        path: '/assignments/:roundId/floor-plan',
+                        builder: (context, state) => FloorPlanScreen(
+                            api: api,
+                            readOnly: true,
+                            assignmentRoundId: int.parse(state.pathParameters['roundId']!),
+                        ),
+                    ),
+                    GoRoute(
                         path: '/bids',
                         builder: (context, state) => BidsScreen(
                             api: api,

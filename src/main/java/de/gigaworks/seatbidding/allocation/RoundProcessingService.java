@@ -25,6 +25,12 @@ import de.gigaworks.seatbidding.persistence.GuestSeatPreferenceRevisionRepositor
 import de.gigaworks.seatbidding.persistence.PhysicalSeatEntity;
 import de.gigaworks.seatbidding.persistence.ReservedGuestSeatAssignmentEntity;
 import de.gigaworks.seatbidding.persistence.ReservedGuestSeatAssignmentRepository;
+import de.gigaworks.seatbidding.persistence.OccupancySourceType;
+import de.gigaworks.seatbidding.persistence.OccupancyStatus;
+import de.gigaworks.seatbidding.persistence.RoundDateCapacityStateEntity;
+import de.gigaworks.seatbidding.persistence.RoundDateCapacityStateRepository;
+import de.gigaworks.seatbidding.persistence.SeatOccupancyEntity;
+import de.gigaworks.seatbidding.persistence.SeatOccupancyRepository;
 import de.gigaworks.seatbidding.round.RoundFactory;
 import de.gigaworks.seatbidding.tokens.BalanceCalculator;
 
@@ -94,6 +100,12 @@ public class RoundProcessingService {
 
     @Inject
     SeatPlacementOptimizer seatPlacementOptimizer;
+
+    @Inject
+    RoundDateCapacityStateRepository capacityStates;
+
+    @Inject
+    SeatOccupancyRepository occupancies;
 
     @Inject
     Clock clock;
@@ -169,6 +181,7 @@ public class RoundProcessingService {
         }
         persistAudit(round, solution, placement);
         assignments.flush();
+        createOriginalOccupancy(roundDates, now);
 
         var spendByParticipation = new HashMap<Long, Integer>();
         for (var assignment : assignments.findAssignedForRound(round.id)) {
@@ -180,7 +193,8 @@ public class RoundProcessingService {
         Map<Long, Integer> carryByEmployee = new HashMap<>();
         for (RoundParticipationEntity participation : participations.findForRound(round.id)) {
             int spend = spendByParticipation.getOrDefault(participation.id, 0);
-            var closing = BalanceCalculator.close(participation.startingBalance, spend, round.carryOverCap);
+            var closing = BalanceCalculator.close(participation.startingBalance,
+                    spend + participation.postAllocationSpendTokens, round.carryOverCap);
             participation.successfulBidTokens = spend;
             participation.remainingBalance = closing.remaining();
             participation.carriedOutTokens = closing.carriedOut();
@@ -195,6 +209,36 @@ public class RoundProcessingService {
         rounds.flush();
         roundFactory.create(round.sequenceNo + 1, now, round.cutoffAt, round, carryByEmployee);
         return true;
+    }
+
+    private void createOriginalOccupancy(
+            List<de.gigaworks.seatbidding.persistence.RoundDateEntity> roundDates, java.time.Instant now) {
+        for (var roundDate : roundDates) {
+            var state = new RoundDateCapacityStateEntity();
+            state.roundDate = roundDate;
+            for (var assignment : assignments.findForDate(roundDate.id)) {
+                if (!assignment.assigned) {
+                    continue;
+                }
+                var occupancy = new SeatOccupancyEntity();
+                occupancy.roundDate = roundDate;
+                occupancy.employee = assignment.bid.participation.employee;
+                occupancy.attendancePeriod = assignment.attendancePeriod;
+                occupancy.physicalSeat = assignment.allocationUnit.physicalSeat;
+                occupancy.sourceType = OccupancySourceType.ORIGINAL_ASSIGNMENT;
+                occupancy.originalSeatAssignment = assignment;
+                occupancy.status = OccupancyStatus.ACTIVE;
+                occupancy.occupiedAt = now;
+                occupancies.persist(occupancy);
+                if (assignment.attendancePeriod != de.gigaworks.seatbidding.persistence.AttendancePeriod.AFTERNOON_ONLY) {
+                    state.morningOccupied++;
+                }
+                if (assignment.attendancePeriod != de.gigaworks.seatbidding.persistence.AttendancePeriod.MORNING_ONLY) {
+                    state.afternoonOccupied++;
+                }
+            }
+            capacityStates.persist(state);
+        }
     }
 
     private void persistAudit(de.gigaworks.seatbidding.persistence.BiddingRoundEntity round,

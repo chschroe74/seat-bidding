@@ -1,7 +1,9 @@
 const SEAT_PUSH_VERSION = 1;
 const SEAT_PUSH_TITLE = 'Seat bidding reminder';
 const SEAT_PUSH_BODY = 'You have not placed your bids for next week yet.';
-const SEAT_PUSH_ACTIONS = new Set(['PLACE_BIDS', 'SKIP_REMINDERS']);
+const SEAT_OFFER_TITLE = 'Seat available';
+const SEAT_OFFER_BODY = 'A time-sensitive seat opportunity is available. Open the app to view current status.';
+const SEAT_PUSH_ACTIONS = new Set(['PLACE_BIDS', 'SKIP_REMINDERS', 'VIEW_OFFER']);
 const LEGACY_FLUTTER_CACHE = 'flutter-app-cache';
 const STANDALONE_WORKER_MARKER = 'seat-bidding-standalone-worker-v1';
 
@@ -38,9 +40,11 @@ function seatSafeRoute(value, fallback) {
     try {
         const url = new URL(value || fallback, self.location.origin);
         if (url.origin !== self.location.origin) return fallback;
-        if (url.pathname !== '/bids' && url.pathname !== '/settings/reminders/skip') return fallback;
+        if (!['/bids', '/settings/reminders/skip', '/assignments'].includes(url.pathname)) return fallback;
         for (const [key, item] of url.searchParams) {
-            if (key !== 'roundId' && key !== 'reminderRoundId' || !/^\d+$/.test(item)) return fallback;
+            const numeric = (key === 'roundId' || key === 'reminderRoundId') && /^\d+$/.test(item);
+            const date = key === 'date' && /^\d{4}-\d{2}-\d{2}$/.test(item);
+            if (!numeric && !date) return fallback;
         }
         return `${url.pathname}${url.search}`;
     }
@@ -52,20 +56,33 @@ function seatSafeRoute(value, fallback) {
 function seatPayload(event) {
     try {
         const value = event.data ? event.data.json() : {};
-        if (value.version !== SEAT_PUSH_VERSION || value.template !== 'BID_REMINDER_V1') throw new Error('version');
+        if (value.version !== SEAT_PUSH_VERSION) throw new Error('version');
         const actions = Array.isArray(value.actions)
             ? value.actions.filter((action) => SEAT_PUSH_ACTIONS.has(action))
             : [];
+        if (value.template === 'SEAT_OFFER_V1') {
+            return {
+                title: SEAT_OFFER_TITLE,
+                body: typeof value.body === 'string' && value.body.length <= 240
+                    ? value.body : SEAT_OFFER_BODY,
+                route: seatSafeRoute(value.route, '/assignments'),
+                suppressionRoute: '/settings/reminders/skip',
+                actions: actions.filter((action) => action === 'VIEW_OFFER'),
+                tag: `seat-offer-${Number.isInteger(value.candidateId) ? value.candidateId : 'current'}`,
+            };
+        }
+        if (value.template !== 'BID_REMINDER_V1') throw new Error('template');
         return {
             title: SEAT_PUSH_TITLE,
             body: SEAT_PUSH_BODY,
             route: seatSafeRoute(value.route, '/bids'),
             suppressionRoute: seatSafeRoute(value.suppressionRoute, '/settings/reminders/skip'),
             actions,
+            tag: 'seat-bidding-reminder',
         };
     }
     catch (_) {
-        return { title: SEAT_PUSH_TITLE, body: SEAT_PUSH_BODY, route: '/bids', suppressionRoute: '/settings/reminders/skip', actions: [] };
+        return { title: SEAT_PUSH_TITLE, body: SEAT_PUSH_BODY, route: '/bids', suppressionRoute: '/settings/reminders/skip', actions: [], tag: 'seat-bidding-reminder' };
     }
 }
 
@@ -76,11 +93,12 @@ self.addEventListener('push', (event) => {
     if (payload.actions.includes('SKIP_REMINDERS')) {
         actions.push({ action: 'SKIP_REMINDERS', title: 'Skip reminders this week' });
     }
+    if (payload.actions.includes('VIEW_OFFER')) actions.push({ action: 'VIEW_OFFER', title: 'View offer' });
     event.waitUntil(self.registration.showNotification(payload.title, {
         body: payload.body,
         icon: '/icons/seat.svg',
         badge: '/icons/seat.svg',
-        tag: 'seat-bidding-reminder',
+        tag: payload.tag,
         renotify: false,
         actions,
         data: { route: payload.route, suppressionRoute: payload.suppressionRoute },

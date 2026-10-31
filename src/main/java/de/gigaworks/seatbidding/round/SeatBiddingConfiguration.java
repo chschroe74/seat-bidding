@@ -29,6 +29,11 @@ public interface SeatBiddingConfiguration {
     @Min(1)
     int seatCapacity();
 
+    @WithName("minimum-open-booking-price")
+    @WithDefault("1")
+    @Min(1)
+    int minimumOpenBookingPrice();
+
     @WithName("time-zone")
     @NotNull
     ZoneId timeZone();

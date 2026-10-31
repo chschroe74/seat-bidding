@@ -94,6 +94,7 @@ public class RoundFactory {
         round.tokensGranted = configuration.tokensPerRound();
         round.carryOverCap = configuration.carryOverCap();
         round.seatCapacity = capacity;
+        round.minimumOpenBookingPrice = configuration.minimumOpenBookingPrice();
         round.capacitySource = activeVersion == null ? CapacitySource.CONFIGURATION : CapacitySource.FLOOR_PLAN;
         round.floorPlanVersion = activeVersion;
         round.predecessor = predecessor;
@@ -124,6 +125,7 @@ public class RoundFactory {
         participation.carriedInTokens = carriedIn;
         participation.startingBalance = BalanceCalculator.nextStartingBalance(round.tokensGranted, carriedIn);
         participation.successfulBidTokens = 0;
+        participation.postAllocationSpendTokens = 0;
         participations.persist(participation);
         addLedger(employee, round, LedgerType.GRANT, round.tokensGranted,
                 "round:" + round.id + ":employee:" + employee.id + ":grant", occurredAt);

@@ -10,9 +10,15 @@ import 'floor_plan_overlay_card.dart';
 import 'floor_plan_svg_image.dart';
 
 class FloorPlanScreen extends StatefulWidget {
-    const FloorPlanScreen({super.key, required this.api, this.readOnly = false});
+    const FloorPlanScreen({
+        super.key,
+        required this.api,
+        this.readOnly = false,
+        this.assignmentRoundId,
+    });
     final ApiClient api;
     final bool readOnly;
+    final int? assignmentRoundId;
 
     @override
     State<FloorPlanScreen> createState() => _FloorPlanScreenState();
@@ -35,8 +41,11 @@ class _FloorPlanScreenState extends State<FloorPlanScreen> {
     Future<void> load() async {
         setState(() { loading = true; error = null; });
         try {
-            final loaded = widget.readOnly ? await widget.api.latestAssignmentsFloorPlan()
-                : await widget.api.currentFloorPlan();
+            final loaded = widget.readOnly
+                    ? widget.assignmentRoundId == null
+                            ? await widget.api.latestAssignmentsFloorPlan()
+                            : await widget.api.assignmentsFloorPlan(widget.assignmentRoundId!)
+                    : await widget.api.currentFloorPlan();
             if (!mounted) return;
             setState(() { plan = loaded; svg = null; dirty = false; });
             if (loaded == null) {
@@ -85,7 +94,7 @@ class _FloorPlanScreenState extends State<FloorPlanScreen> {
             children: [
                 Text(widget.readOnly ? 'Assignment floor plan' : 'Seat preferences',
                     style: Theme.of(context).textTheme.headlineMedium),
-                Text(widget.readOnly ? 'Numbered floor plan for the latest published assignments.'
+                Text(widget.readOnly ? 'Numbered floor plan for these published assignments.'
                     : 'Choose one preferred three-star seat and any number of one- or two-star seats. Unrated seats remain possible.'),
                 const Text('Drag to pan. Hold Ctrl and use the mouse wheel to zoom; touch users can pinch.'),
                 const SizedBox(height: 12),

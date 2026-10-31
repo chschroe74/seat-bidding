@@ -110,6 +110,7 @@ class ApiContractPersistenceTest {
         given().get("/api/settings/notifications").then().statusCode(401);
         given().cookie("seat_session", session).get("/api/settings/notifications").then().statusCode(200)
                 .body("bidRemindersEnabled", equalTo(false))
+                .body("seatOfferNotificationsEnabled", equalTo(false))
                 .body("bidReminderStartWeekday", equalTo("MONDAY"))
                 .body("schedule.localTime", equalTo("10:00"))
                 .body("schedule.timeZone", equalTo("Europe/Berlin"))
@@ -118,15 +119,19 @@ class ApiContractPersistenceTest {
                 .body("devices.size()", equalTo(0));
 
         given().cookie("seat_session", session).contentType(ContentType.JSON)
-                .body(Map.of("bidRemindersEnabled", true, "bidReminderStartWeekday", "FRIDAY"))
+                .body(Map.of("bidRemindersEnabled", true, "bidReminderStartWeekday", "FRIDAY",
+                        "seatOfferNotificationsEnabled", true))
                 .put("/api/settings/notifications").then().statusCode(400)
                 .body("code", equalTo("REQUEST_REJECTED"));
         putJsonWithSession("/api/settings/notifications",
-                Map.of("bidRemindersEnabled", true, "bidReminderStartWeekday", "FRIDAY"), csrf, session)
+                Map.of("bidRemindersEnabled", true, "bidReminderStartWeekday", "FRIDAY",
+                        "seatOfferNotificationsEnabled", true), csrf, session)
                 .then().statusCode(200).body("bidRemindersEnabled", equalTo(true))
+                .body("seatOfferNotificationsEnabled", equalTo(true))
                 .body("bidReminderStartWeekday", equalTo("FRIDAY"));
         putJsonWithSession("/api/settings/notifications",
-                Map.of("bidRemindersEnabled", true, "bidReminderStartWeekday", "SATURDAY"), csrf, session)
+                Map.of("bidRemindersEnabled", true, "bidReminderStartWeekday", "SATURDAY",
+                        "seatOfferNotificationsEnabled", true), csrf, session)
                 .then().statusCode(400);
 
         String endpoint = "https://1.1.1.1/push/capability?token=opaque";

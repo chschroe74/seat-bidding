@@ -37,6 +37,9 @@ public class RoundParticipationEntity extends AuditedEntity {
     
     @Column(name = "successful_bid_tokens", nullable = false)
     public int successfulBidTokens;
+
+    @Column(name = "post_allocation_spend_tokens", nullable = false)
+    public int postAllocationSpendTokens;
     
     @Column(name = "remaining_balance")
     public Integer remainingBalance;
@@ -45,4 +48,3 @@ public class RoundParticipationEntity extends AuditedEntity {
     public Integer carriedOutTokens;
     
 }
-

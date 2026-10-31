@@ -87,7 +87,7 @@ public class BiddingService {
         try {
             normalized = BidSetValidator.validateAndNormalize(
                     request.bids().stream().map(b -> new BidSetValidator.SubmittedBid(b.date(), b.tokens())).toList(),
-                    byDate.keySet(), participation.startingBalance);
+                    byDate.keySet(), participation.startingBalance - participation.postAllocationSpendTokens);
         }
         catch (BidValidationException invalid) {
             throw ApplicationProblem.badRequest(invalid.code(), "Invalid bid set", invalid.getMessage());
@@ -133,8 +133,8 @@ public class BiddingService {
                 participation.round.cutoffAt, participation.round.scheduleZone, now,
                 participation.round.seatCapacity, participation.round.capacitySource,
                 participation.round.floorPlanVersion == null ? null : participation.round.floorPlanVersion.id,
-                participation.startingBalance, total,
-                participation.startingBalance - total, dayResponses);
+                participation.startingBalance, participation.postAllocationSpendTokens, total,
+                participation.startingBalance - participation.postAllocationSpendTokens - total, dayResponses);
     }
     
 

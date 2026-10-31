@@ -35,6 +35,19 @@ void main() {
         expect(draft.remaining, -1);
     });
 
+    test('ordinary post-allocation spending reduces the editable bid budget', () {
+        final draft = BidDraft(
+            startingBalance: 10,
+            postAllocationSpend: 4,
+            values: {monday: 6, tuesday: 0},
+        );
+
+        expect(draft.remaining, 0);
+        expect(draft.autoDistribute({tuesday}), isFalse);
+        draft.values[tuesday] = 1;
+        expect(draft.isValid, isFalse);
+    });
+
     test('clear resets every bid without persistence', () {
         final draft = BidDraft(
             startingBalance: 10,

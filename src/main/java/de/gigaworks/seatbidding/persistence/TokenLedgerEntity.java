@@ -32,6 +32,18 @@ public class TokenLedgerEntity {
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "bid_id")
     public BidEntity bid;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "participation_id")
+    public RoundParticipationEntity participation;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "post_allocation_booking_id")
+    public PostAllocationBookingEntity postAllocationBooking;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "relinquishment_credit_id")
+    public RelinquishmentCreditEntity relinquishmentCredit;
     
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
@@ -55,4 +67,3 @@ public class TokenLedgerEntity {
     }
     
 }
-

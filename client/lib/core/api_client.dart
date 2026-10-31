@@ -11,6 +11,9 @@ class ApiClient {
     Future<Assignments> latestAssignments() async => Assignments.fromJson(
         (await auth.dio.get<Map<String, dynamic>>('/assignments/latest')).data!,
     );
+    Future<Assignments> assignments(int roundId) async => Assignments.fromJson(
+        (await auth.dio.get<Map<String, dynamic>>('/assignments/$roundId')).data!,
+    );
     Future<BiddingContext> currentBidding() async => BiddingContext.fromJson(
         (await auth.dio.get<Map<String, dynamic>>('/bidding/current')).data!,
     );
@@ -31,6 +34,69 @@ class ApiClient {
 
     Future<FloorPlan> latestAssignmentsFloorPlan() async => FloorPlan.fromJson(
         (await auth.dio.get<Map<String, dynamic>>('/assignments/latest/floor-plan')).data!,
+    );
+    Future<FloorPlan> assignmentsFloorPlan(int roundId) async => FloorPlan.fromJson(
+        (await auth.dio.get<Map<String, dynamic>>('/assignments/$roundId/floor-plan')).data!,
+    );
+
+    Future<SeatAvailability> seatAvailability(
+        int roundId,
+        DateTime date,
+        AttendancePeriod period,
+    ) async => SeatAvailability.fromJson(
+        (await auth.dio.get<Map<String, dynamic>>(
+            '/assignments/$roundId/dates/${_date(date)}/seat-availability',
+            queryParameters: {'attendancePeriod': period.wireValue},
+        )).data!,
+    );
+
+    Future<AssignmentDay> relinquishAssignment(
+        int roundId,
+        DateTime date,
+        int occupancyId,
+    ) async => AssignmentDay.fromJson(
+        (await _mutation<Map<String, dynamic>>(() => auth.dio.post(
+            '/assignments/$roundId/dates/${_date(date)}/occupancies/$occupancyId/relinquishment',
+        ))).data!,
+    );
+
+    Future<AssignmentDay> claimOffer(
+        int roundId,
+        DateTime date,
+        OfferHistory offer,
+        int? physicalSeatId,
+    ) async => AssignmentDay.fromJson(
+        (await _mutation<Map<String, dynamic>>(() => auth.dio.post(
+            '/assignments/$roundId/dates/${_date(date)}/offers/${offer.offerId}'
+            '/candidates/${offer.candidateId}/claim',
+            data: {'physicalSeatId': physicalSeatId},
+        ))).data!,
+    );
+
+    Future<AssignmentDay> declineOffer(
+        int roundId,
+        DateTime date,
+        OfferHistory offer,
+    ) async => AssignmentDay.fromJson(
+        (await _mutation<Map<String, dynamic>>(() => auth.dio.post(
+            '/assignments/$roundId/dates/${_date(date)}/offers/${offer.offerId}'
+            '/candidates/${offer.candidateId}/decline',
+        ))).data!,
+    );
+
+    Future<AssignmentDay> createOpenBooking(
+        int roundId,
+        DateTime date,
+        OpenBookingOption option,
+        int? physicalSeatId,
+    ) async => AssignmentDay.fromJson(
+        (await _mutation<Map<String, dynamic>>(() => auth.dio.post(
+            '/assignments/$roundId/dates/${_date(date)}/bookings',
+            data: {
+                'attendancePeriod': option.attendancePeriod.wireValue,
+                'physicalSeatId': physicalSeatId,
+            },
+        ))).data!,
     );
 
     Future<Uint8List> floorPlanSvg(String url) async => Uint8List.fromList(
@@ -217,6 +283,7 @@ class ApiClient {
     Future<NotificationSettings> updateNotificationSettings(
         bool enabled,
         ReminderWeekday weekday,
+        bool seatOffersEnabled,
     ) async => NotificationSettings.fromJson(
         (await _mutation<Map<String, dynamic>>(
             () => auth.dio.put<Map<String, dynamic>>(
@@ -224,6 +291,7 @@ class ApiClient {
                 data: {
                     'bidRemindersEnabled': enabled,
                     'bidReminderStartWeekday': weekday.wireValue,
+                    'seatOfferNotificationsEnabled': seatOffersEnabled,
                 },
             ),
         )).data!,

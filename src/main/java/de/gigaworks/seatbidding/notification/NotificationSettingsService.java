@@ -66,6 +66,7 @@ public class NotificationSettingsService {
         });
         value.bidRemindersEnabled = request.bidRemindersEnabled();
         value.bidReminderStartWeekday = request.bidReminderStartWeekday();
+        value.seatOfferNotificationsEnabled = request.seatOfferNotificationsEnabled();
         settings.flush();
         return response(employee.id, value, clock.instant());
     }
@@ -73,6 +74,7 @@ public class NotificationSettingsService {
     private NotificationSettingsResponse response(long employeeId, EmployeeNotificationSettingsEntity value,
             Instant now) {
         boolean enabled = value != null && value.bidRemindersEnabled;
+        boolean seatOffersEnabled = value != null && value.seatOfferNotificationsEnabled;
         ReminderStartWeekday weekday = value == null ? ReminderStartWeekday.MONDAY : value.bidReminderStartWeekday;
         var devices = subscriptions.findActiveForEmployee(employeeId, now).stream()
                 .map(NotificationSettingsService::device).toList();
@@ -85,7 +87,7 @@ public class NotificationSettingsService {
         var schedule = new NotificationSettingsResponse.Schedule(configuration.reminders().schedule().enabled(),
                 reminderSchedule.localTime(configuration.reminders().schedule().cron()).toString(),
                 configuration.timeZone().getId(), Arrays.asList(ReminderStartWeekday.values()));
-        return new NotificationSettingsResponse(enabled, weekday, schedule,
+        return new NotificationSettingsResponse(enabled, weekday, seatOffersEnabled, schedule,
                 configuration.reminders().webPush().vapidPublicKey(), currentRound, devices);
     }
 

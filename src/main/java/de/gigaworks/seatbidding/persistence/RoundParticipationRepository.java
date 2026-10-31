@@ -25,5 +25,9 @@ public class RoundParticipationRepository implements PanacheRepositoryBase<Round
     public List<RoundParticipationEntity> findForRound(long roundId) {
         return list("round.id", roundId);
     }
+
+    public Optional<RoundParticipationEntity> findForEmployee(long roundId, long employeeId) {
+        return find("round.id = ?1 and employee.id = ?2", roundId, employeeId).firstResultOptional();
+    }
     
 }

@@ -137,6 +137,7 @@ class BiddingContext {
         this.seatCapacity = 0,
         required this.startingBalance,
         required this.bidTotal,
+        this.postAllocationSpend = 0,
         required this.availableToBid,
         required this.days,
     });
@@ -148,6 +149,7 @@ class BiddingContext {
     final int seatCapacity;
     final int startingBalance;
     final int bidTotal;
+    final int postAllocationSpend;
     final int availableToBid;
     final List<BidDay> days;
     factory BiddingContext.fromJson(Map<String, dynamic> json) => BiddingContext(
@@ -159,6 +161,7 @@ class BiddingContext {
         seatCapacity: json['seatCapacity'] as int,
         startingBalance: json['startingBalance'] as int,
         bidTotal: json['bidTotal'] as int,
+        postAllocationSpend: json['postAllocationSpend'] as int? ?? 0,
         availableToBid: json['availableToBid'] as int,
         days: (json['days'] as List)
                 .map((value) => BidDay.fromJson(value as Map<String, dynamic>))
@@ -166,7 +169,7 @@ class BiddingContext {
     );
 }
 
-enum MyStatus { noBid, assigned, notAssigned }
+enum MyStatus { noBid, assigned, notAssigned, relinquished, claimedLater, bookedLater }
 
 class AssignmentParticipant {
     const AssignmentParticipant({
@@ -405,6 +408,122 @@ class GuestSeatPreferences {
     );
 }
 
+class CurrentOccupant {
+    const CurrentOccupant({
+        required this.occupancyId,
+        required this.employeeId,
+        required this.attendancePeriod,
+        required this.sourceType,
+        required this.isCurrentUser,
+        this.firstName,
+        this.lastName,
+        this.seatNumber,
+    });
+    final int occupancyId;
+    final int employeeId;
+    final String? firstName;
+    final String? lastName;
+    final AttendancePeriod attendancePeriod;
+    final String sourceType;
+    final int? seatNumber;
+    final bool isCurrentUser;
+    String get displayName => [firstName, lastName]
+            .whereType<String>()
+            .where((value) => value.isNotEmpty)
+            .join(' ');
+    factory CurrentOccupant.fromJson(Map<String, dynamic> json) => CurrentOccupant(
+        occupancyId: json['occupancyId'] as int,
+        employeeId: json['employeeId'] as int,
+        firstName: json['firstName'] as String?,
+        lastName: json['lastName'] as String?,
+        attendancePeriod: AttendancePeriod.fromJson(json['attendancePeriod']),
+        sourceType: json['sourceType'] as String,
+        seatNumber: json['seatNumber'] as int?,
+        isCurrentUser: json['isCurrentUser'] as bool,
+    );
+}
+
+class RelinquishmentAction {
+    const RelinquishmentAction({required this.occupancyId, required this.allowed, this.disabledReason});
+    final int occupancyId;
+    final bool allowed;
+    final String? disabledReason;
+    factory RelinquishmentAction.fromJson(Map<String, dynamic> json) => RelinquishmentAction(
+        occupancyId: json['occupancyId'] as int,
+        allowed: json['allowed'] as bool,
+        disabledReason: json['disabledReason'] as String?,
+    );
+}
+
+class OfferHistory {
+    const OfferHistory({
+        required this.offerId,
+        required this.candidateId,
+        required this.attendancePeriod,
+        required this.requiredTokens,
+        required this.status,
+        required this.claimAllowed,
+        required this.declineAllowed,
+        required this.seatSelectionRequired,
+        required this.availableSeatCount,
+        required this.statusText,
+        this.deadline,
+    });
+    final int offerId;
+    final int candidateId;
+    final AttendancePeriod attendancePeriod;
+    final int requiredTokens;
+    final DateTime? deadline;
+    final String status;
+    final bool claimAllowed;
+    final bool declineAllowed;
+    final bool seatSelectionRequired;
+    final int availableSeatCount;
+    final String statusText;
+    bool get pending => status == 'PENDING';
+    factory OfferHistory.fromJson(Map<String, dynamic> json) => OfferHistory(
+        offerId: json['offerId'] as int,
+        candidateId: json['candidateId'] as int,
+        attendancePeriod: AttendancePeriod.fromJson(json['attendancePeriod']),
+        requiredTokens: json['requiredTokens'] as int,
+        deadline: json['deadline'] == null ? null : DateTime.parse(json['deadline'] as String),
+        status: json['status'] as String,
+        claimAllowed: json['claimAllowed'] as bool,
+        declineAllowed: json['declineAllowed'] as bool,
+        seatSelectionRequired: json['seatSelectionRequired'] as bool,
+        availableSeatCount: json['availableSeatCount'] as int,
+        statusText: json['statusText'] as String,
+    );
+}
+
+class OpenBookingOption {
+    const OpenBookingOption({
+        required this.attendancePeriod,
+        required this.available,
+        required this.requiredTokens,
+        required this.bookingAllowed,
+        required this.seatSelectionRequired,
+        required this.availableSeatCount,
+        this.disabledReason,
+    });
+    final AttendancePeriod attendancePeriod;
+    final bool available;
+    final int requiredTokens;
+    final bool bookingAllowed;
+    final bool seatSelectionRequired;
+    final int availableSeatCount;
+    final String? disabledReason;
+    factory OpenBookingOption.fromJson(Map<String, dynamic> json) => OpenBookingOption(
+        attendancePeriod: AttendancePeriod.fromJson(json['attendancePeriod']),
+        available: json['available'] as bool,
+        requiredTokens: json['requiredTokens'] as int,
+        bookingAllowed: json['bookingAllowed'] as bool,
+        seatSelectionRequired: json['seatSelectionRequired'] as bool,
+        availableSeatCount: json['availableSeatCount'] as int,
+        disabledReason: json['disabledReason'] as String?,
+    );
+}
+
 class AssignmentDay {
     const AssignmentDay({
         required this.date,
@@ -413,37 +532,84 @@ class AssignmentDay {
         required this.occupiedSeatCount,
         required this.assignedEmployeeCount,
         required this.participants,
+        this.currentOccupants = const [],
+        this.offerHistory = const [],
+        this.openBookingOptions = const [],
         this.reservedSeatCount = 0,
-        int? assignableSeatCapacity,
+        this.assignableSeatCapacity = 0,
+        this.originalOccupiedSeatCount = 0,
+        this.originalAssignedEmployeeCount = 0,
+        this.morningOccupiedCount = 0,
+        this.afternoonOccupiedCount = 0,
+        this.activeEmployeeCount = 0,
+        this.originalParticipants = const [],
+        this.targetDateEndAt,
+        this.relinquishmentAction,
         this.reservationDescription,
-    }) : assignableSeatCapacity = assignableSeatCapacity ?? 0;
+    });
     final DateTime date;
     final String weekday;
+    final DateTime? targetDateEndAt;
     final MyStatus myStatus;
     final int occupiedSeatCount;
     final int assignedEmployeeCount;
     final int reservedSeatCount;
     final int assignableSeatCapacity;
+    final int originalOccupiedSeatCount;
+    final int originalAssignedEmployeeCount;
+    final int morningOccupiedCount;
+    final int afternoonOccupiedCount;
+    final int activeEmployeeCount;
     final String? reservationDescription;
+    final List<AssignmentParticipant> originalParticipants;
     final List<AssignmentParticipant> participants;
+    final List<CurrentOccupant> currentOccupants;
+    final RelinquishmentAction? relinquishmentAction;
+    final List<OfferHistory> offerHistory;
+    final List<OpenBookingOption> openBookingOptions;
     factory AssignmentDay.fromJson(Map<String, dynamic> json) => AssignmentDay(
         date: DateTime.parse(json['date'] as String),
         weekday: json['weekday'] as String,
+        targetDateEndAt: json['targetDateEndAt'] == null
+                ? null
+                : DateTime.parse(json['targetDateEndAt'] as String),
         myStatus: switch (json['myStatus']) {
             'ASSIGNED' => MyStatus.assigned,
             'NOT_ASSIGNED' => MyStatus.notAssigned,
+            'RELINQUISHED' => MyStatus.relinquished,
+            'CLAIMED_LATER' => MyStatus.claimedLater,
+            'BOOKED_LATER' => MyStatus.bookedLater,
             _ => MyStatus.noBid,
         },
         occupiedSeatCount: json['occupiedSeatCount'] as int,
         assignedEmployeeCount: json['assignedEmployeeCount'] as int,
         reservedSeatCount: json['reservedSeatCount'] as int? ?? 0,
         assignableSeatCapacity: json['assignableSeatCapacity'] as int? ?? 0,
+        originalOccupiedSeatCount: json['originalOccupiedSeatCount'] as int? ?? 0,
+        originalAssignedEmployeeCount: json['originalAssignedEmployeeCount'] as int? ?? 0,
+        morningOccupiedCount: json['morningOccupiedCount'] as int? ?? 0,
+        afternoonOccupiedCount: json['afternoonOccupiedCount'] as int? ?? 0,
+        activeEmployeeCount: json['activeEmployeeCount'] as int? ?? 0,
         reservationDescription: json['reservationDescription'] as String?,
+        originalParticipants: (json['originalParticipants'] as List? ?? const [])
+                .map((value) => AssignmentParticipant.fromJson(value as Map<String, dynamic>))
+                .toList(),
         participants: (json['participants'] as List)
-                .map(
-                    (value) =>
-                            AssignmentParticipant.fromJson(value as Map<String, dynamic>),
-                )
+                .map((value) => AssignmentParticipant.fromJson(value as Map<String, dynamic>))
+                .toList(),
+        currentOccupants: (json['currentOccupants'] as List? ?? const [])
+                .map((value) => CurrentOccupant.fromJson(value as Map<String, dynamic>))
+                .toList(),
+        relinquishmentAction: json['myRelinquishmentAction'] == null
+                ? null
+                : RelinquishmentAction.fromJson(
+                        json['myRelinquishmentAction'] as Map<String, dynamic>,
+                    ),
+        offerHistory: (json['myOfferHistory'] as List? ?? const [])
+                .map((value) => OfferHistory.fromJson(value as Map<String, dynamic>))
+                .toList(),
+        openBookingOptions: (json['openBookingOptions'] as List? ?? const [])
+                .map((value) => OpenBookingOption.fromJson(value as Map<String, dynamic>))
                 .toList(),
     );
 }
@@ -510,23 +676,78 @@ class Assignments {
         required this.publishedAt,
         required this.seatCapacity,
         required this.days,
+        this.status = 'COMPLETED',
+        this.availableCreditTokens = 0,
         this.capacitySource = 'CONFIGURATION',
         this.floorPlanVersionId,
+        this.creditExpiresAt,
     });
     final int roundId;
+    final String status;
     final DateTime publishedAt;
     final int seatCapacity;
+    final int availableCreditTokens;
+    final DateTime? creditExpiresAt;
     final List<AssignmentDay> days;
     final String capacitySource;
     final int? floorPlanVersionId;
     factory Assignments.fromJson(Map<String, dynamic> json) => Assignments(
         roundId: json['roundId'] as int,
+        status: json['status'] as String? ?? 'COMPLETED',
         publishedAt: DateTime.parse(json['publishedAt'] as String),
         seatCapacity: json['seatCapacity'] as int,
         capacitySource: json['capacitySource'] as String? ?? 'CONFIGURATION',
         floorPlanVersionId: json['floorPlanVersionId'] as int?,
+        availableCreditTokens:
+                (json['myRelinquishmentCredits'] as Map<String, dynamic>?)?['availableTokens']
+                        as int? ??
+                0,
+        creditExpiresAt:
+                (json['myRelinquishmentCredits'] as Map<String, dynamic>?)?['expiresAt'] == null
+                        ? null
+                        : DateTime.parse(
+                                (json['myRelinquishmentCredits']
+                                        as Map<String, dynamic>)['expiresAt'] as String,
+                            ),
         days: (json['days'] as List)
                 .map((value) => AssignmentDay.fromJson(value as Map<String, dynamic>))
+                .toList(),
+    );
+}
+
+class AvailableSeat {
+    const AvailableSeat({required this.physicalSeatId, required this.seatNumber});
+    final int physicalSeatId;
+    final int seatNumber;
+    factory AvailableSeat.fromJson(Map<String, dynamic> json) => AvailableSeat(
+        physicalSeatId: json['physicalSeatId'] as int,
+        seatNumber: json['seatNumber'] as int,
+    );
+}
+
+class SeatAvailability {
+    const SeatAvailability({
+        required this.roundId,
+        required this.date,
+        required this.attendancePeriod,
+        required this.floorPlanVersionId,
+        required this.serverTime,
+        required this.availableSeats,
+    });
+    final int roundId;
+    final DateTime date;
+    final AttendancePeriod attendancePeriod;
+    final int floorPlanVersionId;
+    final DateTime serverTime;
+    final List<AvailableSeat> availableSeats;
+    factory SeatAvailability.fromJson(Map<String, dynamic> json) => SeatAvailability(
+        roundId: json['roundId'] as int,
+        date: DateTime.parse(json['date'] as String),
+        attendancePeriod: AttendancePeriod.fromJson(json['attendancePeriod']),
+        floorPlanVersionId: json['floorPlanVersionId'] as int,
+        serverTime: DateTime.parse(json['serverTime'] as String),
+        availableSeats: (json['availableSeats'] as List)
+                .map((value) => AvailableSeat.fromJson(value as Map<String, dynamic>))
                 .toList(),
     );
 }
@@ -630,6 +851,7 @@ class RegisteredPushDevice {
 class NotificationSettings {
     const NotificationSettings({
         required this.bidRemindersEnabled,
+        required this.seatOfferNotificationsEnabled,
         required this.bidReminderStartWeekday,
         required this.schedule,
         required this.webPushApplicationServerKey,
@@ -637,6 +859,7 @@ class NotificationSettings {
         this.currentRound,
     });
     final bool bidRemindersEnabled;
+    final bool seatOfferNotificationsEnabled;
     final ReminderWeekday bidReminderStartWeekday;
     final NotificationSchedule schedule;
     final String webPushApplicationServerKey;
@@ -646,6 +869,8 @@ class NotificationSettings {
         Map<String, dynamic> json,
     ) => NotificationSettings(
         bidRemindersEnabled: json['bidRemindersEnabled'] as bool,
+        seatOfferNotificationsEnabled:
+                json['seatOfferNotificationsEnabled'] as bool? ?? true,
         bidReminderStartWeekday: ReminderWeekday.fromJson(
             json['bidReminderStartWeekday'],
         ),

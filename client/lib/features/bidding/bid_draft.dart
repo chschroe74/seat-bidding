@@ -3,6 +3,7 @@ import '../../core/models.dart';
 class BidDraft {
     BidDraft({
         required this.startingBalance,
+        this.postAllocationSpend = 0,
         required Map<DateTime, int> values,
         Map<DateTime, AttendancePeriod>? attendancePeriods,
     }) : values = Map.of(values),
@@ -11,10 +12,11 @@ class BidDraft {
                       date: attendancePeriods?[date] ?? AttendancePeriod.fullDay,
               };
     final int startingBalance;
+    final int postAllocationSpend;
     final Map<DateTime, int> values;
     final Map<DateTime, AttendancePeriod> attendancePeriods;
     int get total => values.values.fold(0, (sum, value) => sum + value);
-    int get remaining => startingBalance - total;
+    int get remaining => startingBalance - postAllocationSpend - total;
     bool get isValid =>
             values.values.every((value) => value >= 0) && remaining >= 0;
 

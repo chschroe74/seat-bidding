@@ -33,7 +33,23 @@ class HelpScreen extends StatelessWidget {
             ),
             _Help(
                 'Assignment cards',
-                'Green with a check means assigned, red with a cross means not assigned, and neutral means no bid. Today has a visible border and label. Morning and Afternoon badges identify half-day attendance; paired employees are grouped to show that they share one physical seat. The employee count can therefore be higher than the occupied-seat count. Reserved seats reduce the number available for assignment. The participant divider marks the assignable-seat boundary.',
+                'The original published result never changes. Each card separately shows current occupancy, your current status, available actions, and your permanent offer history. Green with a check means currently assigned, claimed, or booked; orange means relinquished; red with a cross means not assigned; and neutral means no bid. Today has a visible border and label. Morning and Afternoon badges identify half-day attendance; paired employees are grouped to show that they share one physical seat. The employee count can therefore be higher than the occupied-seat count. Reserved seats reduce the number available for assignment. The participant divider marks the original assignable-seat boundary.',
+            ),
+            _Help(
+                'Relinquishing an assignment',
+                'You may irreversibly relinquish an active occupancy until that target date ends. The original assignment, placement, rank, and bid charge stay unchanged. Relinquishing an original successful assignment creates same-round credits equal to your individual winning bid; credits expire at the end of the target week and are spent before ordinary tokens. Relinquishing a later claim or booking creates no new credit.',
+            ),
+            _Help(
+                'Waiting-list offers',
+                'Released capacity is offered to compatible unsuccessful original bidders in descending original individual-bid tiers. Affordable employees in the same tier may claim first-come-first-served; merely receiving or opening an offer never reserves capacity. Each release keeps one deadline, at most 24 hours after relinquishment and never after the target date ends. Claiming costs exactly your original individual bid. Declining is permanent for that offer. Insufficient tokens, another eligible claim, or expiry creates a disabled historical outcome and does not change the original result.',
+            ),
+            _Help(
+                'Open booking',
+                'Capacity becomes openly bookable when it was originally surplus or no compatible waiting-list candidate remains. Ordinary booking is only for an employee who placed no bid for that date and does not already occupy it. A relinquished original winner may instead rebook only the same attendance period for their original individual bid. An unsuccessful bidder cannot bypass the waiting list. Prices come from the immutable original result and all bookings use credits first, then the still-open round’s ordinary balance.',
+            ),
+            _Help(
+                'Choosing a late numbered seat',
+                'In floor-plan mode every claim or booking requires an explicit compatible numbered seat. The exact completed-round map and its accessible numbered list mark seats only as available or unavailable for that action; they do not reveal why a seat is unavailable or who occupies it. Choosing a marker reserves nothing, and the backend rechecks the stable seat ID when you confirm. Configuration-capacity rounds have no synthetic seat selector.',
             ),
             _Help(
                 'First sign-in',
@@ -46,6 +62,10 @@ class HelpScreen extends StatelessWidget {
             _Help(
                 'Bid reminders',
                 'Bid reminders are an account preference in Settings. Choose Monday through Friday as the first reminder day, then explicitly enable notifications on each web device that should receive them. Saving at least one positive bid stops reminders; an all-zero bid set does not. Disabling reminders keeps your weekday and registered devices. You can also permanently skip reminders for the current round after confirmation; they resume for the next round when globally enabled. Delivery is best effort.',
+            ),
+            _Help(
+                'Seat-offer notifications',
+                'Seat availability offers are a separate account preference and reuse the same registered web devices. A notification is created only when you first reach an affordable waiting-list tier. Delivery is best effort, does not reserve capacity, never extends the deadline, and cannot claim or decline from the notification itself. Opening View offer refreshes the assignment card so every decision uses current state.',
             ),
             _Help(
                 'Web Push on your devices',

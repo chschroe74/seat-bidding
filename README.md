@@ -116,6 +116,8 @@ commit;
 
 The deployed version 1.2 migrations `001-initial-schema`, `002-global-fairness-allocation`, and `003-administrator-seat-reservations` remain immutable. Migration `004-half-day-allocation-units` adds attendance periods and normalized allocation units in staged changesets. It backfills existing bids as full-day and historical results as one-member single units without recalculating completed rounds. Historical assignments retain their published order, audit data, fingerprints, ledger entries, and algorithm version. Migration `005-web-push-bid-reminders` appends synchronized preferences, browser subscriptions, immutable round suppressions, daily dispatch claims, and per-device delivery attempts. It creates no synthetic notification records for existing employees.
 
+Version 1.5 migration `008-post-allocation-workflow` appends the snapshotted open-booking price, ordinary post-allocation spending, independent seat-offer preference, live capacity/occupancy, relinquishment credits, waiting-list offers, late bookings, and seat-offer dispatch audit. It backfills occupancy only for completed target dates that have not ended and never rewrites original allocation, placement, bid-spend, audit, reservation, floor-plan, preference, or notification history. Existing employees remain opted out of seat-offer notifications.
+
 The authenticated bidding context and successful bid-replacement response include the round's physical capacity plus each date's reserved count, assignable capacity, and optional public description. These values are read-only context and do not participate in token validation, auto-distribution, or charging.
 
 ### Allocation audit encoding v4

@@ -58,12 +58,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
         }
     }
 
-    Future<void> _update(bool enabled, ReminderWeekday weekday) async {
+    Future<void> _update(
+        bool enabled,
+        ReminderWeekday weekday,
+        bool seatOffersEnabled,
+    ) async {
         setState(() => _busy = true);
         try {
             final value = await widget.api.updateNotificationSettings(
                 enabled,
                 weekday,
+                seatOffersEnabled,
             );
             if (mounted) setState(() => _settings = value);
         } catch (error) {
@@ -169,9 +174,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     value: settings.bidRemindersEnabled,
                     onChanged: _busy
                             ? null
-                            : (enabled) => _update(enabled, settings.bidReminderStartWeekday),
+                            : (enabled) => _update(
+                                    enabled,
+                                    settings.bidReminderStartWeekday,
+                                    settings.seatOfferNotificationsEnabled,
+                                ),
                 ),
-                if (settings.bidRemindersEnabled) ..._enabledContent(settings),
+                SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Seat availability offers'),
+                    subtitle: const Text(
+                        'Receive a best-effort notification when released capacity is offered to you.',
+                    ),
+                    value: settings.seatOfferNotificationsEnabled,
+                    onChanged: _busy
+                            ? null
+                            : (enabled) => _update(
+                                    settings.bidRemindersEnabled,
+                                    settings.bidReminderStartWeekday,
+                                    enabled,
+                                ),
+                ),
+                if (settings.bidRemindersEnabled || settings.seatOfferNotificationsEnabled)
+                    ..._enabledContent(settings),
                 if (_error != null) ...[
                     const SizedBox(height: 12),
                     Text(
@@ -195,29 +220,46 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     List<Widget> _enabledContent(NotificationSettings settings) => [
         const Divider(),
-        DropdownButtonFormField<ReminderWeekday>(
-            initialValue: settings.bidReminderStartWeekday,
-            decoration: const InputDecoration(labelText: 'Start reminders on'),
-            items: settings.schedule.weekdays
-                    .map(
-                        (weekday) =>
-                                DropdownMenuItem(value: weekday, child: Text(weekday.label)),
-                    )
-                    .toList(),
-            onChanged: _busy
-                    ? null
-                    : (weekday) {
-                            if (weekday != null) _update(true, weekday);
-                        },
-        ),
-        const SizedBox(height: 12),
-        Text(
-            'Reminder time: ${settings.schedule.localTime} ${settings.schedule.timeZone}',
-        ),
-        const SizedBox(height: 8),
-        const Text(
-            'Reminders continue on every following weekday until you save at least one positive bid or skip reminders for the current round.',
-        ),
+        if (settings.bidRemindersEnabled) ...[
+            DropdownButtonFormField<ReminderWeekday>(
+                initialValue: settings.bidReminderStartWeekday,
+                decoration: const InputDecoration(labelText: 'Start reminders on'),
+                items: settings.schedule.weekdays
+                        .map(
+                            (weekday) => DropdownMenuItem(
+                                value: weekday,
+                                child: Text(weekday.label),
+                            ),
+                        )
+                        .toList(),
+                onChanged: _busy
+                        ? null
+                        : (weekday) {
+                                if (weekday != null) {
+                                    _update(
+                                        true,
+                                        weekday,
+                                        settings.seatOfferNotificationsEnabled,
+                                    );
+                                }
+                            },
+            ),
+            const SizedBox(height: 12),
+            Text(
+                'Reminder time: ${settings.schedule.localTime} ${settings.schedule.timeZone}',
+            ),
+            const SizedBox(height: 8),
+            const Text(
+                'Reminders continue on every following weekday until you save at least one positive bid or skip reminders for the current round.',
+            ),
+        ],
+        if (settings.seatOfferNotificationsEnabled) ...[
+            const SizedBox(height: 12),
+            const Text(
+                'Seat availability offers are sent only when you reach an affordable waiting-list tier. '
+                'Delivery is best effort, tied offers remain first-come-first-served, and a notification failure never extends the deadline.',
+            ),
+        ],
         if (!settings.schedule.systemEnabled) ...[
             const SizedBox(height: 12),
             const Card(

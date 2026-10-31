@@ -22,6 +22,7 @@ public record BiddingContextResponse(
         CapacitySource capacitySource,
         Long floorPlanVersionId,
         int startingBalance,
+        int postAllocationSpend,
         int bidTotal,
         int availableToBid,
         List<DayBid> days) {

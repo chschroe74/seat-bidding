@@ -12,11 +12,15 @@ public class AssignmentsResourceImpl implements AssignmentsResource {
     
     @Inject
     AssignmentQueryService service;
-    
+
     @Override
     public AssignmentsResponse get() {
         return service.latest();
     }
-    
-}
 
+    @Override
+    public AssignmentsResponse getRound(long roundId) {
+        return service.round(roundId);
+    }
+
+}

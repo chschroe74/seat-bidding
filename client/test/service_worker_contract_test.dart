@@ -22,6 +22,9 @@ void main() {
             expect(worker, contains("addEventListener('notificationclick'"));
             expect(worker, contains('PLACE_BIDS'));
             expect(worker, contains('SKIP_REMINDERS'));
+            expect(worker, contains('VIEW_OFFER'));
+            expect(worker, contains('SEAT_OFFER_V1'));
+            expect(worker, contains("'/assignments'"));
             expect(worker, contains("'/bids'"));
             expect(worker, contains("'/settings/reminders/skip'"));
             expect(worker, contains('value.version !== SEAT_PUSH_VERSION'));

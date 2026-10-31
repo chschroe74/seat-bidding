@@ -15,8 +15,11 @@ import de.gigaworks.seatbidding.persistence.EmployeeRepository;
 import de.gigaworks.seatbidding.persistence.LedgerType;
 import de.gigaworks.seatbidding.persistence.RoundAllocationAuditRepository;
 import de.gigaworks.seatbidding.persistence.RoundDateRepository;
+import de.gigaworks.seatbidding.persistence.RoundDateCapacityStateRepository;
+import de.gigaworks.seatbidding.persistence.OccupancyStatus;
 import de.gigaworks.seatbidding.persistence.RoundParticipationRepository;
 import de.gigaworks.seatbidding.persistence.SeatAssignmentRepository;
+import de.gigaworks.seatbidding.persistence.SeatOccupancyRepository;
 import de.gigaworks.seatbidding.persistence.TokenLedgerRepository;
 import de.gigaworks.seatbidding.round.RoundFactory;
 import io.quarkus.narayana.jta.QuarkusTransaction;
@@ -41,6 +44,8 @@ class HalfDayRoundProcessingPersistenceTest {
     @Inject SeatAssignmentRepository assignments;
     @Inject TokenLedgerRepository ledger;
     @Inject RoundAllocationAuditRepository audits;
+    @Inject RoundDateCapacityStateRepository capacityStates;
+    @Inject SeatOccupancyRepository occupancies;
     @Inject RoundFactory roundFactory;
     @Inject RoundProcessingService processing;
 
@@ -71,6 +76,11 @@ class HalfDayRoundProcessingPersistenceTest {
             assertEquals(2, memberResults.size());
             assertEquals(List.of(AttendancePeriod.MORNING_ONLY, AttendancePeriod.AFTERNOON_ONLY),
                     memberResults.stream().map(result -> result.attendancePeriod).toList());
+            var capacityState = capacityStates.findForDate(day.id).orElseThrow();
+            assertEquals(1, capacityState.morningOccupied);
+            assertEquals(1, capacityState.afternoonOccupied);
+            assertEquals(2, occupancies.count("roundDate.id = ?1 and status = ?2",
+                    day.id, OccupancyStatus.ACTIVE));
             assertEquals(2, ledger.count("round.id = ?1 and type = ?2", round.id, LedgerType.BID_SPEND));
             assertEquals(List.of(-20, -10), ledger.find("round.id = ?1 and type = ?2 order by amount",
                     round.id, LedgerType.BID_SPEND).stream().map(entry -> entry.amount).toList());

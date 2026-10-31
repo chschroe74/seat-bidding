@@ -66,6 +66,12 @@ class _BidsScreenState extends State<BidsScreen> with WidgetsBindingObserver {
             if (contextData?.roundId == loaded.roundId && dirty) {
                 setState(() {
                     contextData = loaded;
+                    draft = BidDraft(
+                        startingBalance: loaded.startingBalance,
+                        postAllocationSpend: loaded.postAllocationSpend,
+                        values: draft!.values,
+                        attendancePeriods: draft!.attendancePeriods,
+                    );
                     refreshing = false;
                     message =
                             'Seat availability refreshed; your unsaved bids were preserved.';
@@ -87,6 +93,7 @@ class _BidsScreenState extends State<BidsScreen> with WidgetsBindingObserver {
                 contextData = loaded;
                 draft = BidDraft(
                     startingBalance: loaded.startingBalance,
+                    postAllocationSpend: loaded.postAllocationSpend,
                     values: values,
                     attendancePeriods: {
                         for (final day in loaded.days) day.date: day.attendancePeriod,
@@ -173,6 +180,7 @@ class _BidsScreenState extends State<BidsScreen> with WidgetsBindingObserver {
                 contextData = updated;
                 draft = BidDraft(
                     startingBalance: updated.startingBalance,
+                    postAllocationSpend: updated.postAllocationSpend,
                     values: {for (final day in updated.days) day.date: day.tokens},
                     attendancePeriods: {
                         for (final day in updated.days) day.date: day.attendancePeriod,
@@ -302,6 +310,10 @@ class _BidsScreenState extends State<BidsScreen> with WidgetsBindingObserver {
                                         spacing: 24,
                                         children: [
                                             Text('Starting: ${draft!.startingBalance}'),
+                                            Text(
+                                                'Post-allocation spend: '
+                                                '${draft!.postAllocationSpend}',
+                                            ),
                                             Text('Bid total: ${draft!.total}'),
                                             Text(
                                                 'Available: ${draft!.remaining}',
@@ -315,7 +327,7 @@ class _BidsScreenState extends State<BidsScreen> with WidgetsBindingObserver {
                             ),
                             if (!draft!.isValid)
                                 const Text(
-                                    'Bid total must not exceed your starting balance.',
+                                    'Bid total plus post-allocation spend must not exceed your starting balance.',
                                     style: TextStyle(color: Colors.red),
                                 ),
                             for (final day in contextData!.days)

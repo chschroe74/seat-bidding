@@ -16,4 +16,13 @@ public class SeatAssignmentRepository implements PanacheRepositoryBase<SeatAssig
         return list("roundDate.round.id = ?1 and assigned = true", roundId);
     }
 
+    public List<SeatAssignmentEntity> findUnassignedForDate(long roundDateId) {
+        return list("roundDate.id = ?1 and assigned = false order by bid.tokens desc, bid.id", roundDateId);
+    }
+
+    public java.util.Optional<SeatAssignmentEntity> findForEmployeeDate(long roundDateId, long employeeId) {
+        return find("roundDate.id = ?1 and bid.participation.employee.id = ?2", roundDateId, employeeId)
+                .firstResultOptional();
+    }
+
 }

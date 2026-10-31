@@ -11,4 +11,8 @@ public class ReservedGuestSeatAssignmentRepository
     public List<ReservedGuestSeatAssignmentEntity> findForRound(long roundId) {
         return list("roundDate.round.id = ?1 order by roundDate.ordinal, physicalSeat.seatNumber", roundId);
     }
+
+    public List<ReservedGuestSeatAssignmentEntity> findForDate(long roundDateId) {
+        return list("roundDate.id = ?1 order by physicalSeat.id", roundDateId);
+    }
 }

@@ -39,7 +39,7 @@ void main() {
         expect(find.text('Start reminders on'), findsNothing);
         expect(find.text('Enable notifications on this device'), findsNothing);
 
-        await tester.tap(find.byType(Switch));
+        await tester.tap(find.widgetWithText(SwitchListTile, 'Bid reminders enabled'));
         await tester.pumpAndSettle();
         expect(push.enrollCalls, 0);
         expect(api.settings.bidRemindersEnabled, isTrue);
@@ -58,7 +58,7 @@ void main() {
         );
         await tester.pumpAndSettle();
 
-        expect(find.text('Version 1.4.1'), findsOneWidget);
+        expect(find.text('Version 1.5.0'), findsOneWidget);
         expect(find.textContaining('+2'), findsNothing);
     });
 
@@ -76,6 +76,8 @@ void main() {
 
         final enable = find.text('Enable notifications on this device');
         await tester.scrollUntilVisible(enable, 200);
+        await tester.drag(find.byType(ListView), const Offset(0, -120));
+        await tester.pumpAndSettle();
         expect(push.enrollCalls, 0);
         await tester.tap(enable);
         await tester.pumpAndSettle();
@@ -114,6 +116,29 @@ void main() {
         },
     );
 
+    testWidgets('seat offers can reveal shared device controls independently', (
+        tester,
+    ) async {
+        final api = _FakeApi(_settings(enabled: false));
+        final push = _FakeWebPushClient();
+        await tester.pumpWidget(
+            MaterialApp(home: SettingsScreen(api: api, webPush: push)),
+        );
+        await tester.pumpAndSettle();
+
+        await tester.tap(
+            find.widgetWithText(SwitchListTile, 'Seat availability offers'),
+        );
+        await tester.pumpAndSettle();
+
+        expect(api.settings.bidRemindersEnabled, isFalse);
+        expect(api.settings.seatOfferNotificationsEnabled, isTrue);
+        expect(find.text('Start reminders on'), findsNothing);
+        expect(find.textContaining('Delivery is best effort'), findsOneWidget);
+        expect(find.text('Enable notifications on this device'), findsOneWidget);
+        expect(push.enrollCalls, 0);
+    });
+
     testWidgets('round suppression requires confirmation and offers no undo', (
         tester,
     ) async {
@@ -141,9 +166,11 @@ void main() {
 
 NotificationSettings _settings({
     required bool enabled,
+    bool seatOffersEnabled = false,
     List<RegisteredPushDevice> devices = const [],
 }) => NotificationSettings(
     bidRemindersEnabled: enabled,
+    seatOfferNotificationsEnabled: seatOffersEnabled,
     bidReminderStartWeekday: ReminderWeekday.monday,
     schedule: const NotificationSchedule(
         systemEnabled: true,
@@ -176,9 +203,11 @@ class _FakeApi extends ApiClient {
     Future<NotificationSettings> updateNotificationSettings(
         bool enabled,
         ReminderWeekday weekday,
+        bool seatOffersEnabled,
     ) async {
         settings = NotificationSettings(
             bidRemindersEnabled: enabled,
+            seatOfferNotificationsEnabled: seatOffersEnabled,
             bidReminderStartWeekday: weekday,
             schedule: settings.schedule,
             webPushApplicationServerKey: settings.webPushApplicationServerKey,
@@ -202,6 +231,7 @@ class _FakeApi extends ApiClient {
         );
         settings = NotificationSettings(
             bidRemindersEnabled: settings.bidRemindersEnabled,
+            seatOfferNotificationsEnabled: settings.seatOfferNotificationsEnabled,
             bidReminderStartWeekday: settings.bidReminderStartWeekday,
             schedule: settings.schedule,
             webPushApplicationServerKey: settings.webPushApplicationServerKey,
@@ -216,6 +246,7 @@ class _FakeApi extends ApiClient {
         suppressCalls++;
         settings = NotificationSettings(
             bidRemindersEnabled: settings.bidRemindersEnabled,
+            seatOfferNotificationsEnabled: settings.seatOfferNotificationsEnabled,
             bidReminderStartWeekday: settings.bidReminderStartWeekday,
             schedule: settings.schedule,
             webPushApplicationServerKey: settings.webPushApplicationServerKey,

@@ -67,7 +67,7 @@ public class ReminderDispatchService {
             WebPushTransport.SendResult result;
             try {
                 result = transport.send(new WebPushTransport.Message(claim.roundId(), subscription.endpoint(),
-                        subscription.p256dh(), subscription.auth(), payload, topic));
+                        subscription.p256dh(), subscription.auth(), payload, topic, null, false));
             }
             catch (RuntimeException exception) {
                 result = WebPushTransport.SendResult.temporary(null);
