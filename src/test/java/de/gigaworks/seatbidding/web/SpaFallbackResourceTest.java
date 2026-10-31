@@ -24,6 +24,30 @@ class SpaFallbackResourceTest {
         }
     }
 
+    @Test
+    void fallbackSupportsNestedClientRoutesButNotApiOrManagementRoutes() throws Exception {
+        var thread = Thread.currentThread();
+        var original = thread.getContextClassLoader();
+        thread.setContextClassLoader(new IndexClassLoader(original));
+        try {
+            var resource = new SpaFallbackResource();
+            try (var response = resource.index("assignments/17/floor-plan")) {
+                assertEquals(200, response.getStatus());
+            }
+            try (var response = resource.index("settings/reminders/skip")) {
+                assertEquals(200, response.getStatus());
+            }
+            try (var response = resource.index("api/unknown")) {
+                assertEquals(404, response.getStatus());
+            }
+            try (var response = resource.index("q/unknown")) {
+                assertEquals(404, response.getStatus());
+            }
+        } finally {
+            thread.setContextClassLoader(original);
+        }
+    }
+
     private static final class IndexClassLoader extends ClassLoader {
 
         private IndexClassLoader(ClassLoader parent) {

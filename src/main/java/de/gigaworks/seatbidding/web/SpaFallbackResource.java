@@ -10,11 +10,14 @@ import java.io.IOException;
 
 @Path("/")
 public class SpaFallbackResource {
-    
+
     @GET
-    @Path("{route:assignments|bids|help|login}")
+    @Path("{route:.+}")
     @Produces(MediaType.TEXT_HTML)
-    public Response index(@PathParam("route") String ignored) throws IOException {
+    public Response index(@PathParam("route") String route) throws IOException {
+        if (isNonApplicationRoute(route)) {
+            return Response.status(Response.Status.NOT_FOUND).build();
+        }
         var stream = Thread.currentThread().getContextClassLoader()
                 .getResourceAsStream("META-INF/resources/index.html");
         if (stream == null) {
@@ -26,19 +29,10 @@ public class SpaFallbackResource {
                     .build();
         }
     }
-    
-    @GET
-    @Path("activate/{step:code|password}")
-    @Produces(MediaType.TEXT_HTML)
-    public Response activation(@PathParam("step") String ignored) throws IOException {
-        return index(ignored);
+
+    private static boolean isNonApplicationRoute(String route) {
+        return route.equals("api") || route.startsWith("api/")
+                || route.equals("q") || route.startsWith("q/")
+                || route.equals("j_security_check");
     }
-    
-    @GET
-    @Path("admin/reservations")
-    @Produces(MediaType.TEXT_HTML)
-    public Response reservations() throws IOException {
-        return index("admin/reservations");
-    }
-    
 }
