@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:dio/dio.dart';
 import '../../core/api_client.dart';
 import '../../core/models.dart';
+import 'assignment_action_reason.dart';
 import 'late_seat_selector_dialog.dart';
 
 class AssignmentsScreen extends StatefulWidget {
@@ -408,7 +409,11 @@ class _DayCard extends StatelessWidget {
                                         ),
                                     ),
                                 if (day.relinquishmentAction?.disabledReason != null)
-                                    Text(day.relinquishmentAction!.disabledReason!),
+                                    Text(
+                                        assignmentActionReasonText(
+                                            day.relinquishmentAction!.disabledReason,
+                                        ),
+                                    ),
                                 for (final offer in day.offerHistory)
                                     Card(
                                         child: Padding(
@@ -464,7 +469,7 @@ class _DayCard extends StatelessWidget {
                                                 option.bookingAllowed
                                                         ? '${option.requiredTokens} tokens · '
                                                             '${option.availableSeatCount} compatible seats'
-                                                        : option.disabledReason ?? 'Not available',
+                                                        : assignmentActionReasonText(option.disabledReason),
                                             ),
                                             trailing: FilledButton.tonal(
                                                 onPressed: busy || !option.bookingAllowed
