@@ -136,6 +136,50 @@ void main() {
             expect(find.text('Customer workshop'), findsOneWidget);
         },
     );
+
+    testWidgets('assignment card hides open booking when every option is disabled', (
+        tester,
+    ) async {
+        final api = _FakeApi(
+            Assignments(
+                roundId: 1,
+                publishedAt: DateTime.utc(2026, 8, 14),
+                seatCapacity: 4,
+                days: [
+                    AssignmentDay(
+                        date: DateTime(2026, 8, 17),
+                        weekday: 'MONDAY',
+                        myStatus: MyStatus.assigned,
+                        occupiedSeatCount: 1,
+                        assignedEmployeeCount: 1,
+                        assignableSeatCapacity: 4,
+                        participants: const [],
+                        openBookingOptions: const [
+                            OpenBookingOption(
+                                attendancePeriod: AttendancePeriod.fullDay,
+                                available: false,
+                                requiredTokens: 1,
+                                bookingAllowed: false,
+                                seatSelectionRequired: false,
+                                availableSeatCount: 0,
+                                disabledReason: 'ALREADY_OCCUPIES_DATE',
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+        );
+        await tester.pumpWidget(
+            MaterialApp(
+                home: Scaffold(body: AssignmentsScreen(api: api)),
+            ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.byType(ExpansionTile));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Open booking'), findsNothing);
+    });
 }
 
 class _FakeApi extends ApiClient {

@@ -450,7 +450,7 @@ class _DayCard extends StatelessWidget {
                                             ),
                                         ),
                                     ),
-                                if (day.openBookingOptions.isNotEmpty) ...[
+                                if (day.openBookingOptions.any((option) => option.bookingAllowed)) ...[
                                     const Divider(),
                                     Text(
                                         'Open booking',
