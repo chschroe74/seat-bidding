@@ -61,6 +61,7 @@ class ApiContractPersistenceTest {
     void openApiAndPublicConfigurationDescribeFormCookie() {
         given().get("/api/public/configuration").then().statusCode(200)
                 .header("Content-Security-Policy", containsString("script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'"))
+                .header("Content-Security-Policy", containsString("connect-src 'self' blob:"))
                 .header("Content-Security-Policy", containsString("font-src 'self' data:"))
                 .body("apiBasePath", equalTo("/api"));
         String document = given().accept(ContentType.JSON).get("/q/openapi")

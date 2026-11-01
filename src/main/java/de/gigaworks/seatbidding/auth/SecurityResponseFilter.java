@@ -23,10 +23,13 @@ public class SecurityResponseFilter implements ContainerResponseFilter {
         }
         response.getHeaders().putSingle("X-Content-Type-Options", "nosniff");
         response.getHeaders().putSingle("Referrer-Policy", "no-referrer");
-        response.getHeaders().putSingle("Content-Security-Policy",
-                path.matches("/api/floor-plan/versions/[^/]+/svg")
-                        ? "default-src 'none'; style-src 'unsafe-inline'"
-                        : "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; connect-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; worker-src 'self' blob:");
+        response.getHeaders().putSingle("Content-Security-Policy", contentSecurityPolicy(path));
+    }
+
+    static String contentSecurityPolicy(String path) {
+        return path.matches("/api/floor-plan/versions/[^/]+/svg")
+                ? "default-src 'none'; style-src 'unsafe-inline'"
+                : "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; connect-src 'self' blob:; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; worker-src 'self' blob:";
     }
 
     private void mapEmptyBadRequest(ContainerRequestContext request, ContainerResponseContext response, String path) {
