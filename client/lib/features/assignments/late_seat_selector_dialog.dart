@@ -60,36 +60,46 @@ class LateSeatSelectorDialog extends StatelessWidget {
                                     builder: (context, constraints) => Stack(
                                         children: [
                                             Positioned.fill(
-                                                child: FloorPlanInteractiveViewer(
-                                                    child: LayoutBuilder(
-                                                        builder: (context, mapConstraints) => Stack(
-                                                            children: [
-                                                                Positioned.fill(
-                                                                    child: FloorPlanSvgImage(
-                                                                        bytes: svg,
-                                                                        semanticsLabel:
-                                                                                'Office floor plan for seat selection',
-                                                                    ),
-                                                                ),
-                                                                for (final seat in plan.seats)
-                                                                    Positioned(
-                                                                        left: seat.x *
-                                                                                        mapConstraints.maxWidth -
-                                                                                22,
-                                                                        top: seat.y *
-                                                                                        mapConstraints.maxHeight -
-                                                                                22,
-                                                                        child: _AvailabilitySeatMarker(
-                                                                            seat: seat,
-                                                                            available:
-                                                                                    availableIds.contains(seat.id),
-                                                                            onPressed: () => Navigator.pop(
-                                                                                context,
-                                                                                availableById[seat.id],
+                                                child: Center(
+                                                    child: AspectRatio(
+                                                        aspectRatio:
+                                                                plan.viewBox.width / plan.viewBox.height,
+                                                        child: FloorPlanInteractiveViewer(
+                                                            child: LayoutBuilder(
+                                                                builder: (context, mapConstraints) => Stack(
+                                                                    children: [
+                                                                        Positioned.fill(
+                                                                            child: FloorPlanSvgImage(
+                                                                                bytes: svg,
+                                                                                semanticsLabel:
+                                                                                        'Office floor plan for seat selection',
                                                                             ),
                                                                         ),
-                                                                    ),
-                                                            ],
+                                                                        for (final seat in plan.seats)
+                                                                            Positioned(
+                                                                                left: seat.x *
+                                                                                                mapConstraints
+                                                                                                        .maxWidth -
+                                                                                        22,
+                                                                                top: seat.y *
+                                                                                                mapConstraints
+                                                                                                        .maxHeight -
+                                                                                        22,
+                                                                                child: _AvailabilitySeatMarker(
+                                                                                    seat: seat,
+                                                                                    available:
+                                                                                            availableIds.contains(
+                                                                                                seat.id,
+                                                                                            ),
+                                                                                    onPressed: () => Navigator.pop(
+                                                                                        context,
+                                                                                        availableById[seat.id],
+                                                                                    ),
+                                                                                ),
+                                                                            ),
+                                                                    ],
+                                                                ),
+                                                            ),
                                                         ),
                                                     ),
                                                 ),
