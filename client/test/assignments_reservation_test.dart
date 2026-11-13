@@ -111,6 +111,53 @@ void main() {
             expect(find.text('Customer workshop'), findsOneWidget);
         },
     );
+
+    testWidgets('no published round shows an empty state instead of a connection error', (
+        tester,
+    ) async {
+        final api = _FailingApi(const Problem(
+            status: 404,
+            code: 'PUBLISHED_ROUND_NOT_FOUND',
+            detail: 'No published round exists.',
+        ));
+        await tester.pumpWidget(
+            MaterialApp(
+                home: Scaffold(body: AssignmentsScreen(api: api)),
+            ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('No seat assignments yet'), findsOneWidget);
+        expect(find.text('Place bids'), findsOneWidget);
+        expect(find.text('Check your connection and try again.'), findsNothing);
+    });
+
+    testWidgets('other failures keep the connection error state', (tester) async {
+        final api = _FailingApi(const Problem(
+            status: 500,
+            code: 'ERROR',
+            detail: 'The request failed.',
+        ));
+        await tester.pumpWidget(
+            MaterialApp(
+                home: Scaffold(body: AssignmentsScreen(api: api)),
+            ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('Check your connection and try again.'), findsOneWidget);
+        expect(find.text('No seat assignments yet'), findsNothing);
+    });
+}
+
+class _FailingApi extends ApiClient {
+    _FailingApi(this.problem) : super(AuthService.testing(Dio(), _NoopCookieStore()));
+    final Problem problem;
+    @override
+    Future<Assignments> latestAssignments() async => throw DioException(
+        requestOptions: RequestOptions(path: '/assignments/latest'),
+        error: problem,
+    );
 }
 
 class _FakeApi extends ApiClient {
