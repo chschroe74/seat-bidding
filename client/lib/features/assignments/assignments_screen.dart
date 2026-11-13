@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:go_router/go_router.dart';
@@ -21,6 +22,9 @@ class _AssignmentsScreenState extends State<AssignmentsScreen> {
         builder: (context, snapshot) {
             if (snapshot.connectionState != ConnectionState.done) {
                 return const Center(child: CircularProgressIndicator());
+            }
+            if (_noPublishedRound(snapshot.error)) {
+                return _NoAssignmentsState(refresh: retry);
             }
             if (snapshot.hasError) {
                 return _ErrorState(
@@ -233,6 +237,46 @@ class _ParticipantRow extends StatelessWidget {
                 const SizedBox(width: 4),
                 Text(participant.assigned ? 'Assigned' : 'Not assigned'),
             ],
+        ),
+    );
+}
+
+/// No round has been processed yet (fresh installation). This is an expected state, not a failure.
+bool _noPublishedRound(Object? error) {
+    final problem = error is DioException ? error.error : error;
+    return problem is Problem && problem.code == 'PUBLISHED_ROUND_NOT_FOUND';
+}
+
+class _NoAssignmentsState extends StatelessWidget {
+    const _NoAssignmentsState({required this.refresh});
+    final VoidCallback refresh;
+    @override
+    Widget build(BuildContext context) => Center(
+        child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                    const Icon(Icons.event_seat_outlined, size: 48),
+                    const SizedBox(height: 8),
+                    Text('No seat assignments yet', style: Theme.of(context).textTheme.titleMedium),
+                    const SizedBox(height: 4),
+                    const Text(
+                        'Assignments appear here once the first bidding round has closed.',
+                        textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 12),
+                    Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        alignment: WrapAlignment.center,
+                        children: [
+                            FilledButton(onPressed: () => context.go('/bids'), child: const Text('Place bids')),
+                            OutlinedButton(onPressed: refresh, child: const Text('Refresh')),
+                        ],
+                    ),
+                ],
+            ),
         ),
     );
 }
