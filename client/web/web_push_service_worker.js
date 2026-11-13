@@ -12,10 +12,13 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
     event.waitUntil((async () => {
         const firstStandaloneActivation = !(await caches.has(STANDALONE_WORKER_MARKER));
+        // Only windows migrating from the legacy Flutter worker need the one-time reload. A first visit already
+        // runs the current bootstrap; reloading it mid-load leaves WebKit/Safari with a blank page.
+        const migratingFromLegacyWorker = await caches.has(LEGACY_FLUTTER_CACHE);
         await caches.delete(LEGACY_FLUTTER_CACHE);
         await caches.open(STANDALONE_WORKER_MARKER);
         await self.clients.claim();
-        if (firstStandaloneActivation) {
+        if (firstStandaloneActivation && migratingFromLegacyWorker) {
             const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
             await Promise.all(windows.map((client) => client.navigate(client.url).catch(() => null)));
         }
