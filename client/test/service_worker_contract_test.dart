@@ -14,6 +14,7 @@ void main() {
             expect(worker, contains('caches.delete(LEGACY_FLUTTER_CACHE)'));
             expect(worker, contains("'seat-bidding-standalone-worker-v1'"));
             expect(worker, contains('firstStandaloneActivation'));
+            expect(worker, contains('firstStandaloneActivation && migratingFromLegacyWorker'));
             expect(worker, contains('client.navigate(client.url)'));
             expect(worker, contains("addEventListener('fetch'"));
             expect(worker, contains("cache: 'no-store'"));
