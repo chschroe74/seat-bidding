@@ -56,6 +56,9 @@ void main() {
                         occupiedSeatCount: 1,
                         assignedEmployeeCount: 2,
                         assignableSeatCapacity: 1,
+                        morningOccupiedCount: 1,
+                        afternoonOccupiedCount: 1,
+                        activeEmployeeCount: 2,
                         participants: participants,
                         currentOccupants: const [
                             CurrentOccupant(
@@ -95,7 +98,11 @@ void main() {
         expect(find.text('Shared physical seat'), findsOneWidget);
         expect(find.text('Morning'), findsOneWidget);
         expect(find.text('Afternoon'), findsOneWidget);
-        expect(find.text('2 employees assigned'), findsOneWidget);
+        expect(
+            find.text('Current attendance: 1 morning · 1 afternoon · 2 employees'),
+            findsOneWidget,
+        );
+        expect(find.textContaining('employees assigned'), findsNothing);
         expect(find.textContaining('Seat 7'), findsNWidgets(4));
     });
 
@@ -137,7 +144,7 @@ void main() {
         },
     );
 
-    testWidgets('assignment card hides open booking when every option is disabled', (
+    testWidgets('assignment card hides open booking when employee has a seat', (
         tester,
     ) async {
         final api = _FakeApi(
@@ -179,6 +186,94 @@ void main() {
         await tester.pumpAndSettle();
 
         expect(find.text('Open booking'), findsNothing);
+    });
+
+    testWidgets('assignment card explains disabled open booking options without a seat', (
+        tester,
+    ) async {
+        final api = _FakeApi(
+            Assignments(
+                roundId: 1,
+                publishedAt: DateTime.utc(2026, 8, 14),
+                seatCapacity: 4,
+                days: [
+                    AssignmentDay(
+                        date: DateTime(2026, 8, 17),
+                        weekday: 'MONDAY',
+                        myStatus: MyStatus.noBid,
+                        occupiedSeatCount: 1,
+                        assignedEmployeeCount: 1,
+                        assignableSeatCapacity: 4,
+                        participants: const [],
+                        openBookingOptions: const [
+                            OpenBookingOption(
+                                attendancePeriod: AttendancePeriod.fullDay,
+                                available: false,
+                                requiredTokens: 45,
+                                bookingAllowed: false,
+                                seatSelectionRequired: false,
+                                availableSeatCount: 0,
+                                disabledReason: 'INSUFFICIENT_POST_ALLOCATION_FUNDS',
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+        );
+        await tester.pumpWidget(
+            MaterialApp(
+                home: Scaffold(body: AssignmentsScreen(api: api)),
+            ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.byType(ExpansionTile));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Open booking'), findsOneWidget);
+        expect(
+            find.text(
+                'This booking requires 45 tokens. You do not have enough relinquishment credits '
+                'or predecessor tokens available.',
+            ),
+            findsOneWidget,
+        );
+        expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Book')).onPressed, isNull);
+    });
+
+    testWidgets('seat assignments show total late-booking funds and their sources', (
+        tester,
+    ) async {
+        final api = _FakeApi(
+            Assignments(
+                roundId: 1,
+                publishedAt: DateTime.utc(2026, 8, 14),
+                seatCapacity: 4,
+                availableCreditTokens: 12,
+                lateBookingAvailableTokens: 52,
+                lateBookingCreditTokens: 12,
+                lateBookingCarryInTokens: 40,
+                creditExpiresAt: DateTime.utc(2026, 8, 22),
+                days: [
+                    AssignmentDay(
+                        date: DateTime(2026, 8, 17),
+                        weekday: 'MONDAY',
+                        myStatus: MyStatus.noBid,
+                        occupiedSeatCount: 0,
+                        assignedEmployeeCount: 0,
+                        assignableSeatCapacity: 4,
+                        participants: const [],
+                    ),
+                ],
+            ),
+        );
+        await tester.pumpWidget(
+            MaterialApp(home: Scaffold(body: AssignmentsScreen(api: api))),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('52 tokens available for late bookings'), findsOneWidget);
+        expect(find.textContaining('12 relinquishment credits + 40 predecessor tokens'), findsOneWidget);
+        expect(find.textContaining('Relinquishment credits are used first'), findsOneWidget);
     });
 }
 

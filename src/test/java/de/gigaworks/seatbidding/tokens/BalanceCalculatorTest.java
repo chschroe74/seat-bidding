@@ -14,5 +14,10 @@ class BalanceCalculatorTest {
     @Test void rejectsOverspend() {
         assertThrows(IllegalArgumentException.class, () -> BalanceCalculator.close(10, 11, 20));
     }
+    @Test void uncappedLateCarryIsSpentBeforeItReducesRegularCarry() {
+        assertEquals(new BalanceCalculator.ClosingBalance(84, 24, 66),
+                BalanceCalculator.closeAfterLateBookings(60, 24, 60, 30, 0, 24));
+        assertEquals(new BalanceCalculator.ClosingBalance(20, 20, 0),
+                BalanceCalculator.closeAfterLateBookings(60, 24, 60, 40, 60, 24));
+    }
 }
-

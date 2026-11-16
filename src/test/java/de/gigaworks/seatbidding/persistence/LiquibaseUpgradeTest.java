@@ -38,6 +38,15 @@ class LiquibaseUpgradeTest {
                         + "WHERE table_schema='public' AND table_name='seat_occupancy'"));
                 assertEquals(1, scalarInt(connection, "SELECT count(*) FROM information_schema.tables "
                         + "WHERE table_schema='public' AND table_name='released_capacity_offer'"));
+                assertEquals(1, scalarInt(connection, "SELECT count(*) FROM information_schema.columns "
+                        + "WHERE table_schema='public' AND table_name='post_allocation_booking' "
+                        + "AND column_name='carry_in_tokens_spent'"));
+                assertEquals(1, scalarInt(connection, "SELECT count(*) FROM information_schema.columns "
+                        + "WHERE table_schema='public' AND table_name='post_allocation_booking' "
+                        + "AND column_name='refunded_at'"));
+                assertEquals(1, scalarInt(connection, "SELECT count(*) FROM information_schema.columns "
+                        + "WHERE table_schema='public' AND table_name='round_participation' "
+                        + "AND column_name='uncapped_carried_in_tokens'"));
             }
         }
     }

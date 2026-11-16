@@ -69,6 +69,7 @@ class _BidsScreenState extends State<BidsScreen> with WidgetsBindingObserver {
                     draft = BidDraft(
                         startingBalance: loaded.startingBalance,
                         postAllocationSpend: loaded.postAllocationSpend,
+                        lateBookingSpend: loaded.lateBookingSpend,
                         values: draft!.values,
                         attendancePeriods: draft!.attendancePeriods,
                     );
@@ -94,6 +95,7 @@ class _BidsScreenState extends State<BidsScreen> with WidgetsBindingObserver {
                 draft = BidDraft(
                     startingBalance: loaded.startingBalance,
                     postAllocationSpend: loaded.postAllocationSpend,
+                    lateBookingSpend: loaded.lateBookingSpend,
                     values: values,
                     attendancePeriods: {
                         for (final day in loaded.days) day.date: day.attendancePeriod,
@@ -181,6 +183,7 @@ class _BidsScreenState extends State<BidsScreen> with WidgetsBindingObserver {
                 draft = BidDraft(
                     startingBalance: updated.startingBalance,
                     postAllocationSpend: updated.postAllocationSpend,
+                    lateBookingSpend: updated.lateBookingSpend,
                     values: {for (final day in updated.days) day.date: day.tokens},
                     attendancePeriods: {
                         for (final day in updated.days) day.date: day.attendancePeriod,
@@ -310,10 +313,12 @@ class _BidsScreenState extends State<BidsScreen> with WidgetsBindingObserver {
                                         spacing: 24,
                                         children: [
                                             Text('Starting: ${draft!.startingBalance}'),
-                                            Text(
-                                                'Post-allocation spend: '
-                                                '${draft!.postAllocationSpend}',
-                                            ),
+                                            Text('Late-booking spend: ${draft!.lateBookingSpend}'),
+                                            if (draft!.postAllocationSpend > 0)
+                                                Text(
+                                                    'Bidding-balance reduction: '
+                                                    '${draft!.postAllocationSpend}',
+                                                ),
                                             Text('Bid total: ${draft!.total}'),
                                             Text(
                                                 'Available: ${draft!.remaining}',
@@ -327,7 +332,7 @@ class _BidsScreenState extends State<BidsScreen> with WidgetsBindingObserver {
                             ),
                             if (!draft!.isValid)
                                 const Text(
-                                    'Bid total plus post-allocation spend must not exceed your starting balance.',
+                                    'Bid total exceeds the balance still available for upcoming-week bids.',
                                     style: TextStyle(color: Colors.red),
                                 ),
                             for (final day in contextData!.days)

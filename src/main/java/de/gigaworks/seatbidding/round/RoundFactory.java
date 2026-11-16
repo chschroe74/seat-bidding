@@ -57,7 +57,7 @@ public class RoundFactory {
     FloorPlanVersionSeatRepository floorPlanSeats;
 
     public BiddingRoundEntity create(long sequenceNo, Instant opensAt, Instant cutoffSearchStart,
-            BiddingRoundEntity predecessor, Map<Long, Integer> carryByEmployee) {
+            BiddingRoundEntity predecessor, Map<Long, Integer> uncappedCarryByEmployee) {
         var zone = configuration.timeZone();
         var cutoffAt = schedule.nextCutoff(configuration.scheduler().cron(), zone, cutoffSearchStart);
         var targetDates = schedule.targetDates(cutoffAt, zone);
@@ -110,28 +110,35 @@ public class RoundFactory {
         }
 
         for (var employee : employees.listAll()) {
-            createParticipation(round, employee, carryByEmployee.getOrDefault(employee.id, 0), opensAt);
+            createParticipation(round, employee, uncappedCarryByEmployee.getOrDefault(employee.id, 0), opensAt);
         }
         return round;
     }
 
     public RoundParticipationEntity createParticipation(BiddingRoundEntity round,
             de.gigaworks.seatbidding.persistence.EmployeeEntity employee,
-            int carriedIn, Instant occurredAt) {
+            int uncappedCarriedIn, Instant occurredAt) {
         var participation = new RoundParticipationEntity();
         participation.round = round;
         participation.employee = employee;
         participation.grantTokens = round.tokensGranted;
-        participation.carriedInTokens = carriedIn;
-        participation.startingBalance = BalanceCalculator.nextStartingBalance(round.tokensGranted, carriedIn);
+        participation.uncappedCarriedInTokens = uncappedCarriedIn;
+        participation.carriedInTokens = Math.min(round.carryOverCap, uncappedCarriedIn);
+        participation.startingBalance = BalanceCalculator.nextStartingBalance(round.tokensGranted,
+                participation.carriedInTokens);
         participation.successfulBidTokens = 0;
         participation.postAllocationSpendTokens = 0;
         participations.persist(participation);
         addLedger(employee, round, LedgerType.GRANT, round.tokensGranted,
                 "round:" + round.id + ":employee:" + employee.id + ":grant", occurredAt);
-        if (carriedIn > 0) {
-            addLedger(employee, round, LedgerType.CARRY_IN, carriedIn,
+        if (participation.carriedInTokens > 0) {
+            addLedger(employee, round, LedgerType.CARRY_IN, participation.carriedInTokens,
                     "round:" + round.id + ":employee:" + employee.id + ":carry-in", occurredAt);
+        }
+        int lateBookingCarryIn = uncappedCarriedIn - participation.carriedInTokens;
+        if (lateBookingCarryIn > 0) {
+            addLedger(employee, round, LedgerType.LATE_BOOKING_CARRY_IN, lateBookingCarryIn,
+                    "round:" + round.id + ":employee:" + employee.id + ":late-booking-carry-in", occurredAt);
         }
         return participation;
     }

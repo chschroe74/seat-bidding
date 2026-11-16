@@ -20,11 +20,15 @@ public record AssignmentsResponse(
         Long floorPlanVersionId,
         int seatCapacity,
         RelinquishmentCredits myRelinquishmentCredits,
+        LateBookingFunds myLateBookingFunds,
         List<AssignmentDay> days) {
 
     public enum MyStatus { NO_BID, ASSIGNED, NOT_ASSIGNED, RELINQUISHED, CLAIMED_LATER, BOOKED_LATER }
 
     public record RelinquishmentCredits(int availableTokens, Instant expiresAt) {
+    }
+
+    public record LateBookingFunds(int availableTokens, int relinquishmentCreditTokens, int carryInTokens) {
     }
 
     public record AssignmentDay(

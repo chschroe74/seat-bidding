@@ -40,12 +40,15 @@ public class PostAllocationBookingEntity {
     @Column(name = "credit_tokens_spent", nullable = false)
     public int creditTokensSpent;
 
-    @Column(name = "ordinary_tokens_spent", nullable = false)
-    public int ordinaryTokensSpent;
+    @Column(name = "carry_in_tokens_spent", nullable = false)
+    public int carryInTokensSpent;
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "ordinary_participation_id")
-    public RoundParticipationEntity ordinaryParticipation;
+    @JoinColumn(name = "carry_in_participation_id")
+    public RoundParticipationEntity carryInParticipation;
+
+    @Column(name = "refunded_at")
+    public Instant refundedAt;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     public Instant createdAt;

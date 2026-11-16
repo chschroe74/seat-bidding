@@ -89,7 +89,8 @@ class _AssignmentsScreenState extends State<AssignmentsScreen> {
                         'A credit equal to your original individual bid is created for this target week; '
                         'it is spent first and expires without carry-over.'
                     : 'This is irreversible. The seat is released and your original result stays visible. '
-                        'Relinquishing a later claim or booking creates no refund or second credit.',
+                        'The tokens paid for this later claim or booking are restored to the same sources. '
+                        'No additional credit is created.',
             'Relinquish',
         );
         if (!confirmed) return;
@@ -115,7 +116,7 @@ class _AssignmentsScreenState extends State<AssignmentsScreen> {
         }
         final confirmed = await _confirm(
             'Claim this seat offer?',
-            '${offer.requiredTokens} tokens will be charged, using relinquishment credits first. '
+            '${offer.requiredTokens} tokens will be charged, using relinquishment credits first and then available carry-over. '
             '${seat == null ? '' : 'Seat ${seat.seatNumber} was selected. '}'
             'The offer is rechecked when you confirm.',
             'Claim offer',
@@ -164,7 +165,7 @@ class _AssignmentsScreenState extends State<AssignmentsScreen> {
         }
         final confirmed = await _confirm(
             'Book available capacity?',
-            '${option.requiredTokens} tokens will be charged, using relinquishment credits first. '
+            '${option.requiredTokens} tokens will be charged, using relinquishment credits first and then available carry-over. '
             '${seat == null ? '' : 'Seat ${seat.seatNumber} was selected. '}'
             'Capacity and funding are rechecked when you confirm.',
             'Book',
@@ -233,22 +234,17 @@ class _AssignmentsScreenState extends State<AssignmentsScreen> {
                         Text(
                             'Published ${DateFormat.yMd().add_Hm().format(assignments.publishedAt.toLocal())}',
                         ),
-                        if (assignments.availableCreditTokens > 0)
-                            Card(
-                                child: ListTile(
-                                    leading: const Icon(Icons.toll),
-                                    title: Text(
-                                        '${assignments.availableCreditTokens} relinquishment '
-                                        '${assignments.availableCreditTokens == 1 ? 'credit' : 'credits'} available',
-                                    ),
-                                    subtitle: Text(
-                                        assignments.creditExpiresAt == null
-                                                ? 'Credits are applied before regular tokens in this round.'
-                                                : 'Credits are applied first and expire '
-                                                    '${DateFormat.yMd().add_Hm().format(assignments.creditExpiresAt!.toLocal())}.',
-                                    ),
+                        Card(
+                            child: ListTile(
+                                leading: const Icon(Icons.toll),
+                                title: Text(
+                                    '${assignments.lateBookingAvailableTokens} '
+                                    '${assignments.lateBookingAvailableTokens == 1 ? 'token' : 'tokens'} '
+                                    'available for late bookings',
                                 ),
+                                subtitle: Text(_lateBookingFundsDescription(assignments)),
                             ),
+                        ),
                         const SizedBox(height: 12),
                         for (final day in assignments.days)
                             _DayCard(
@@ -265,6 +261,28 @@ class _AssignmentsScreenState extends State<AssignmentsScreen> {
             );
         },
     );
+
+    static String _lateBookingFundsDescription(Assignments assignments) {
+        final credits = assignments.lateBookingCreditTokens;
+        final carryIn = assignments.lateBookingCarryInTokens;
+        if (credits == 0 && carryIn == 0) {
+            return 'No relinquishment credits or predecessor tokens are currently available.';
+        }
+        final parts = <String>[];
+        if (credits > 0) {
+            parts.add('$credits relinquishment ${credits == 1 ? 'credit' : 'credits'}');
+        }
+        if (carryIn > 0) {
+            parts.add('$carryIn predecessor ${carryIn == 1 ? 'token' : 'tokens'}');
+        }
+        final expiry = credits > 0 && assignments.creditExpiresAt != null
+                ? ' Relinquishment credits are used first and expire '
+                    '${DateFormat.yMd().add_Hm().format(assignments.creditExpiresAt!.toLocal())}.'
+                : credits > 0
+                ? ' Relinquishment credits are used first.'
+                : '';
+        return '${parts.join(' + ')}.$expiry';
+    }
 }
 
 class _DayCard extends StatelessWidget {
@@ -287,6 +305,10 @@ class _DayCard extends StatelessWidget {
     @override
     Widget build(BuildContext context) {
         final today = DateUtils.isSameDay(day.date, DateTime.now());
+        final hasCurrentSeat = switch (day.myStatus) {
+            MyStatus.assigned || MyStatus.claimedLater || MyStatus.bookedLater => true,
+            MyStatus.relinquished || MyStatus.notAssigned || MyStatus.noBid => false,
+        };
         final color = switch (day.myStatus) {
             MyStatus.assigned => Colors.green.shade50,
             MyStatus.claimedLater || MyStatus.bookedLater => Colors.green.shade50,
@@ -353,8 +375,6 @@ class _DayCard extends StatelessWidget {
                                     '${day.afternoonOccupiedCount} afternoon · '
                                     '${day.activeEmployeeCount} employees',
                                 ),
-                                if (day.assignedEmployeeCount != day.occupiedSeatCount)
-                                    Text('${day.assignedEmployeeCount} employees assigned'),
                                 if (day.reservationDescription != null) ...[
                                     const SizedBox(height: 8),
                                     Semantics(
@@ -455,12 +475,18 @@ class _DayCard extends StatelessWidget {
                                             ),
                                         ),
                                     ),
-                                if (day.openBookingOptions.any((option) => option.bookingAllowed)) ...[
+                                if (!hasCurrentSeat) ...[
                                     const Divider(),
                                     Text(
                                         'Open booking',
                                         style: Theme.of(context).textTheme.titleSmall,
                                     ),
+                                    if (day.openBookingOptions.isEmpty)
+                                        Text(
+                                            assignmentActionReasonText(
+                                                'CAPACITY_STATE_UNAVAILABLE',
+                                            ),
+                                        ),
                                     for (final option in day.openBookingOptions)
                                         ListTile(
                                             contentPadding: EdgeInsets.zero,
@@ -469,7 +495,10 @@ class _DayCard extends StatelessWidget {
                                                 option.bookingAllowed
                                                         ? '${option.requiredTokens} tokens · '
                                                             '${option.availableSeatCount} compatible seats'
-                                                        : assignmentActionReasonText(option.disabledReason),
+                                                        : assignmentActionReasonText(
+                                                            option.disabledReason,
+                                                            requiredTokens: option.requiredTokens,
+                                                        ),
                                             ),
                                             trailing: FilledButton.tonal(
                                                 onPressed: busy || !option.bookingAllowed

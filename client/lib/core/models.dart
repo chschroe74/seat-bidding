@@ -138,6 +138,7 @@ class BiddingContext {
         required this.startingBalance,
         required this.bidTotal,
         this.postAllocationSpend = 0,
+        this.lateBookingSpend = 0,
         required this.availableToBid,
         required this.days,
     });
@@ -150,6 +151,7 @@ class BiddingContext {
     final int startingBalance;
     final int bidTotal;
     final int postAllocationSpend;
+    final int lateBookingSpend;
     final int availableToBid;
     final List<BidDay> days;
     factory BiddingContext.fromJson(Map<String, dynamic> json) => BiddingContext(
@@ -162,6 +164,7 @@ class BiddingContext {
         startingBalance: json['startingBalance'] as int,
         bidTotal: json['bidTotal'] as int,
         postAllocationSpend: json['postAllocationSpend'] as int? ?? 0,
+        lateBookingSpend: json['lateBookingSpend'] as int? ?? 0,
         availableToBid: json['availableToBid'] as int,
         days: (json['days'] as List)
                 .map((value) => BidDay.fromJson(value as Map<String, dynamic>))
@@ -678,6 +681,9 @@ class Assignments {
         required this.days,
         this.status = 'COMPLETED',
         this.availableCreditTokens = 0,
+        this.lateBookingAvailableTokens = 0,
+        this.lateBookingCreditTokens = 0,
+        this.lateBookingCarryInTokens = 0,
         this.capacitySource = 'CONFIGURATION',
         this.floorPlanVersionId,
         this.creditExpiresAt,
@@ -687,6 +693,9 @@ class Assignments {
     final DateTime publishedAt;
     final int seatCapacity;
     final int availableCreditTokens;
+    final int lateBookingAvailableTokens;
+    final int lateBookingCreditTokens;
+    final int lateBookingCarryInTokens;
     final DateTime? creditExpiresAt;
     final List<AssignmentDay> days;
     final String capacitySource;
@@ -702,6 +711,13 @@ class Assignments {
                 (json['myRelinquishmentCredits'] as Map<String, dynamic>?)?['availableTokens']
                         as int? ??
                 0,
+        lateBookingAvailableTokens:
+                (json['myLateBookingFunds'] as Map<String, dynamic>?)?['availableTokens'] as int? ?? 0,
+        lateBookingCreditTokens:
+                (json['myLateBookingFunds']
+                        as Map<String, dynamic>?)?['relinquishmentCreditTokens'] as int? ?? 0,
+        lateBookingCarryInTokens:
+                (json['myLateBookingFunds'] as Map<String, dynamic>?)?['carryInTokens'] as int? ?? 0,
         creditExpiresAt:
                 (json['myRelinquishmentCredits'] as Map<String, dynamic>?)?['expiresAt'] == null
                         ? null

@@ -96,6 +96,7 @@ public class AssignmentQueryService {
         var now = clock.instant();
         postAllocation.materializeExpiredCredits(current.id, round.id, now);
         int creditTokens = credits.available(current.id, round.id, now);
+        var lateBookingFunds = postAllocation.lateBookingFunds(round, current.id, now);
         Instant creditExpiry = creditTokens == 0 ? null : dates.findForRound(round.id).stream()
                 .max(Comparator.comparing(value -> value.targetDate))
                 .map(value -> targetDateEnd(value.targetDate, round.scheduleZone)).orElse(null);
@@ -145,10 +146,11 @@ public class AssignmentQueryService {
                     ? Math.max(morning, afternoon)
                     : (int) active.stream().filter(value -> value.physicalSeat != null)
                             .map(value -> value.physicalSeat.id).distinct().count();
-            var action = myActive.map(value -> new AssignmentsResponse.RelinquishmentAction(value.id,
-                    now.isBefore(targetDateEnd(day.targetDate, round.scheduleZone)),
-                    now.isBefore(targetDateEnd(day.targetDate, round.scheduleZone)) ? null : "TARGET_DATE_ENDED"))
-                    .orElse(null);
+            var action = myActive.map(value -> {
+                var eligibility = postAllocation.relinquishmentEligibility(value, now);
+                return new AssignmentsResponse.RelinquishmentAction(value.id, eligibility.allowed(),
+                        eligibility.reason());
+            }).orElse(null);
             var history = candidates.findForEmployeeDate(current.id, day.id).stream().map(value -> {
                 boolean pending = value.status == OfferCandidateStatus.PENDING && now.isBefore(value.offer.deadline);
                 return new AssignmentsResponse.OfferHistory(value.offer.id, value.id, value.attendancePeriod,
@@ -173,7 +175,9 @@ public class AssignmentQueryService {
         }).toList();
         return new AssignmentsResponse(round.id, round.status.name(), round.processedAt, round.capacitySource,
                 round.floorPlanVersion == null ? null : round.floorPlanVersion.id, round.seatCapacity,
-                new AssignmentsResponse.RelinquishmentCredits(creditTokens, creditExpiry), days);
+                new AssignmentsResponse.RelinquishmentCredits(creditTokens, creditExpiry),
+                new AssignmentsResponse.LateBookingFunds(lateBookingFunds.availableTokens(),
+                        lateBookingFunds.relinquishmentCreditTokens(), lateBookingFunds.carryInTokens()), days);
     }
 
     private static Instant targetDateEnd(LocalDate date, String zone) {

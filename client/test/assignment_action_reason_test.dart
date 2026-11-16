@@ -16,6 +16,18 @@ void main() {
             'No compatible capacity is currently available.',
         );
         expect(
+            assignmentActionReasonText('INSUFFICIENT_POST_ALLOCATION_FUNDS'),
+            'You do not have enough relinquishment credits or predecessor tokens for this booking.',
+        );
+        expect(
+            assignmentActionReasonText(
+                'INSUFFICIENT_POST_ALLOCATION_FUNDS',
+                requiredTokens: 45,
+            ),
+            'This booking requires 45 tokens. You do not have enough relinquishment credits or '
+            'predecessor tokens available.',
+        );
+        expect(
             assignmentActionReasonText('ORIGINAL_UNSUCCESSFUL_BID'),
             'Open booking is unavailable because your original bid was unsuccessful.',
         );

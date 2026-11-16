@@ -4,6 +4,7 @@ class BidDraft {
     BidDraft({
         required this.startingBalance,
         this.postAllocationSpend = 0,
+        this.lateBookingSpend = 0,
         required Map<DateTime, int> values,
         Map<DateTime, AttendancePeriod>? attendancePeriods,
     }) : values = Map.of(values),
@@ -13,6 +14,7 @@ class BidDraft {
               };
     final int startingBalance;
     final int postAllocationSpend;
+    final int lateBookingSpend;
     final Map<DateTime, int> values;
     final Map<DateTime, AttendancePeriod> attendancePeriods;
     int get total => values.values.fold(0, (sum, value) => sum + value);

@@ -1,0 +1,33 @@
+databaseChangeLog:
+  - changeSet:
+      id: 009-refundable-carry-in-post-allocation
+      author: codex
+      changes:
+        - sql:
+            comment: Restrict late-booking funding to carry-in and record compensating refunds.
+            splitStatements: false
+            sql: |
+              ALTER TABLE post_allocation_booking RENAME COLUMN ordinary_tokens_spent TO carry_in_tokens_spent;
+              ALTER TABLE post_allocation_booking RENAME COLUMN ordinary_participation_id TO carry_in_participation_id;
+              ALTER TABLE post_allocation_booking ADD COLUMN refunded_at timestamptz;
+              ALTER TABLE post_allocation_booking DROP CONSTRAINT ck_booking_tokens;
+              ALTER TABLE post_allocation_booking DROP CONSTRAINT ck_booking_participation;
+              ALTER TABLE post_allocation_booking ADD CONSTRAINT ck_booking_tokens CHECK (required_tokens > 0 AND credit_tokens_spent >= 0 AND carry_in_tokens_spent >= 0 AND credit_tokens_spent + carry_in_tokens_spent = required_tokens);
+              ALTER TABLE post_allocation_booking ADD CONSTRAINT ck_booking_carry_in_participation CHECK ((carry_in_tokens_spent > 0) = (carry_in_participation_id IS NOT NULL));
+              ALTER TABLE post_allocation_booking ADD CONSTRAINT ck_booking_refund CHECK (refunded_at IS NULL OR refunded_at >= created_at);
+              ALTER TABLE token_ledger DROP CONSTRAINT ck_ledger_type;
+              ALTER TABLE token_ledger ADD CONSTRAINT ck_ledger_type CHECK (type IN ('GRANT','CARRY_IN','BID_SPEND','POST_ALLOCATION_SPEND','POST_ALLOCATION_REFUND','RELINQUISHMENT_CREDIT','CREDIT_SPEND','CREDIT_REFUND','CREDIT_EXPIRY','EXPIRY'));
+      rollback:
+        - sql:
+            splitStatements: false
+            sql: |
+              ALTER TABLE token_ledger DROP CONSTRAINT ck_ledger_type;
+              ALTER TABLE token_ledger ADD CONSTRAINT ck_ledger_type CHECK (type IN ('GRANT','CARRY_IN','BID_SPEND','POST_ALLOCATION_SPEND','RELINQUISHMENT_CREDIT','CREDIT_SPEND','CREDIT_EXPIRY','EXPIRY'));
+              ALTER TABLE post_allocation_booking DROP CONSTRAINT ck_booking_refund;
+              ALTER TABLE post_allocation_booking DROP CONSTRAINT ck_booking_carry_in_participation;
+              ALTER TABLE post_allocation_booking DROP CONSTRAINT ck_booking_tokens;
+              ALTER TABLE post_allocation_booking DROP COLUMN refunded_at;
+              ALTER TABLE post_allocation_booking RENAME COLUMN carry_in_participation_id TO ordinary_participation_id;
+              ALTER TABLE post_allocation_booking RENAME COLUMN carry_in_tokens_spent TO ordinary_tokens_spent;
+              ALTER TABLE post_allocation_booking ADD CONSTRAINT ck_booking_tokens CHECK (required_tokens > 0 AND credit_tokens_spent >= 0 AND ordinary_tokens_spent >= 0 AND credit_tokens_spent + ordinary_tokens_spent = required_tokens);
+              ALTER TABLE post_allocation_booking ADD CONSTRAINT ck_booking_participation CHECK ((ordinary_tokens_spent > 0) = (ordinary_participation_id IS NOT NULL));

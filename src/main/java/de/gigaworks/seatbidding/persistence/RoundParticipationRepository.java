@@ -29,5 +29,14 @@ public class RoundParticipationRepository implements PanacheRepositoryBase<Round
     public Optional<RoundParticipationEntity> findForEmployee(long roundId, long employeeId) {
         return find("round.id = ?1 and employee.id = ?2", roundId, employeeId).firstResultOptional();
     }
+
+    public Optional<RoundParticipationEntity> findByIdForUpdate(long id, Duration timeout) {
+        return getEntityManager().createQuery("from RoundParticipationEntity p where p.id = :id",
+                        RoundParticipationEntity.class)
+                .setParameter("id", id)
+                .setLockMode(LockModeType.PESSIMISTIC_WRITE)
+                .setHint("jakarta.persistence.lock.timeout", Math.toIntExact(timeout.toMillis()))
+                .getResultStream().findFirst();
+    }
     
 }

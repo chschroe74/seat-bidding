@@ -9,7 +9,7 @@ class HelpScreen extends StatelessWidget {
             Text('Help', style: TextStyle(fontSize: 30, fontWeight: FontWeight.bold)),
             _Help(
                 'Tokens and balances',
-                'Each weekly round grants tokens plus capped carry-over. Only winning bids are charged. Unsuccessful bids remain unspent, but every remaining token is still subject to the carry-over cap.',
+                'Each weekly round grants new tokens plus capped carry-over for regular bids. Only winning bids are charged. Unsuccessful bids remain unspent. Your full remainder from the previous round is available for late bookings, even above the carry-over cap; only the capped portion can be used for upcoming-week bids.',
             ),
             _Help(
                 'Place and change bids',
@@ -37,7 +37,7 @@ class HelpScreen extends StatelessWidget {
             ),
             _Help(
                 'Relinquishing an assignment',
-                'You may irreversibly relinquish an active occupancy until that target date ends. The original assignment, placement, rank, and bid charge stay unchanged. Relinquishing an original successful assignment creates same-round credits equal to your individual winning bid; credits expire at the end of the target week and are spent before ordinary tokens. Relinquishing a later claim or booking creates no new credit.',
+                'You may irreversibly relinquish an active occupancy until that target date ends. The original assignment, placement, rank, and bid charge stay unchanged. Relinquishing an original successful assignment creates same-round credits equal to your individual winning bid; credits expire at the end of the target week and are spent before predecessor tokens. Relinquishing a later claim or booking restores its original credit and predecessor-token funding without creating a new credit. If its funding round has already closed, it can no longer be relinquished.',
             ),
             _Help(
                 'Waiting-list offers',
@@ -45,7 +45,7 @@ class HelpScreen extends StatelessWidget {
             ),
             _Help(
                 'Open booking',
-                'Capacity becomes openly bookable when it was originally surplus or no compatible waiting-list candidate remains. Ordinary booking is only for an employee who placed no bid for that date and does not already occupy it. A relinquished original winner may instead rebook only the same attendance period for their original individual bid. An unsuccessful bidder cannot bypass the waiting list. Prices come from the immutable original result and all bookings use credits first, then the still-open round’s ordinary balance.',
+                'Capacity becomes openly bookable when it was originally surplus or no compatible waiting-list candidate remains. Ordinary booking is only for an employee who placed no bid for that date and does not already occupy it. A relinquished original winner may instead rebook only the same attendance period for their original individual bid. An unsuccessful bidder cannot bypass the waiting list. Prices come from the immutable original result and all bookings use credits first, then the full uncommitted remainder from the previous round. The carry-over cap does not limit late bookings, but spending enough of that remainder can reduce the capped tokens still available for upcoming-week bids. The new grant is never available for late bookings, so some seats may be unaffordable.',
             ),
             _Help(
                 'Choosing a late numbered seat',

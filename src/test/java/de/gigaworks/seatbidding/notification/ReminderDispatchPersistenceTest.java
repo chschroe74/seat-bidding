@@ -81,8 +81,8 @@ class ReminderDispatchPersistenceTest {
             statement.executeUpdate("""
                     INSERT INTO round_date(id,round_id,target_date,ordinal) VALUES (3001,2001,'2026-08-17',1);
                     INSERT INTO round_participation(id,round_id,employee_id,grant_tokens,carried_in_tokens,
-                                                    starting_balance)
-                    VALUES (4001,2001,1001,60,0,60);
+                                                    uncapped_carried_in_tokens,starting_balance)
+                    VALUES (4001,2001,1001,60,0,0,60);
                     INSERT INTO bid(id,round_date_id,participation_id,tokens,attendance_period)
                     VALUES (5001,3001,4001,1,'FULL_DAY')
                     """);

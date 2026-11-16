@@ -31,6 +31,9 @@ public class RoundParticipationEntity extends AuditedEntity {
     
     @Column(name = "carried_in_tokens", nullable = false)
     public int carriedInTokens;
+
+    @Column(name = "uncapped_carried_in_tokens", nullable = false)
+    public int uncappedCarriedInTokens;
     
     @Column(name = "starting_balance", nullable = false)
     public int startingBalance;

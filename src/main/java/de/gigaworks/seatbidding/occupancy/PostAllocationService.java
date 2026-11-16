@@ -36,6 +36,7 @@ import de.gigaworks.seatbidding.persistence.RoundDateEntity;
 import de.gigaworks.seatbidding.persistence.RoundDateRepository;
 import de.gigaworks.seatbidding.persistence.RoundParticipationEntity;
 import de.gigaworks.seatbidding.persistence.RoundParticipationRepository;
+import de.gigaworks.seatbidding.persistence.RoundStatus;
 import de.gigaworks.seatbidding.persistence.SeatAssignmentEntity;
 import de.gigaworks.seatbidding.persistence.SeatAssignmentRepository;
 import de.gigaworks.seatbidding.persistence.SeatOccupancyEntity;
@@ -101,6 +102,13 @@ public class PostAllocationService {
                 .orElseThrow(() -> ApplicationProblem.notFound("OCCUPANCY_NOT_FOUND",
                         "No active occupancy belonging to the current employee was found."));
 
+        PostAllocationBookingEntity booking = null;
+        if (occupancy.sourceType != OccupancySourceType.ORIGINAL_ASSIGNMENT) {
+            booking = bookings.findForOccupancyForUpdate(occupancy.id).orElseThrow(() ->
+                    new IllegalStateException("Later occupancy has no funding record"));
+            requireRefundable(booking, now);
+        }
+
         occupancy.status = OccupancyStatus.RELINQUISHED;
         occupancy.relinquishedAt = now;
         release(context.state(), occupancy.attendancePeriod);
@@ -119,6 +127,9 @@ public class PostAllocationService {
 
         if (release.originalAssignment) {
             createCredit(occupancy, context.round(), employee, now);
+        }
+        else {
+            refundBooking(booking, employee, now);
         }
 
         var offer = new ReleasedCapacityOfferEntity();
@@ -152,6 +163,10 @@ public class PostAllocationService {
         }
         if (occupancies.hasActive(context.date().id, employee.id)) {
             throw conflict("ALREADY_OCCUPIES_DATE", "The employee already occupies this date.");
+        }
+        if (occupancies.hasRelinquishedLaterBooking(context.date().id, employee.id)) {
+            throw conflict("LATER_BOOKING_RELINQUISHED",
+                    "A relinquished later booking cannot be replaced for the same date.");
         }
         if (!hasCapacity(context, candidate.attendancePeriod)) {
             candidate.status = OfferCandidateStatus.CLAIMED_BY_OTHER;
@@ -273,6 +288,23 @@ public class PostAllocationService {
                 ? availableSeats(context, period).size() : availableSlots(context, period);
     }
 
+    public RelinquishmentEligibility relinquishmentEligibility(SeatOccupancyEntity occupancy, Instant now) {
+        if (!now.isBefore(targetDateEnd(occupancy.roundDate))) {
+            return RelinquishmentEligibility.unavailable("TARGET_DATE_ENDED");
+        }
+        if (occupancy.sourceType == OccupancySourceType.ORIGINAL_ASSIGNMENT) {
+            return RelinquishmentEligibility.available();
+        }
+        var booking = bookings.findForOccupancy(occupancy.id).orElse(null);
+        if (booking == null) {
+            throw new IllegalStateException("Later occupancy has no funding record");
+        }
+        if (booking.carryInTokensSpent == 0 || refundableParticipationOpen(booking, now)) {
+            return RelinquishmentEligibility.available();
+        }
+        return RelinquishmentEligibility.unavailable("REFUND_WINDOW_ENDED");
+    }
+
     @Transactional
     public void materializeExpiredCredits(long employeeId, long roundId, Instant now) {
         for (var credit : credits.findExpiredForUpdate(employeeId, roundId, now)) {
@@ -286,14 +318,23 @@ public class PostAllocationService {
 
     private BookingEligibility bookingEligibility(LockedContext context, EmployeeEntity employee,
             AttendancePeriod period, Instant now) {
-        if (!now.isBefore(targetDateEnd(context.date())) || occupancies.hasActive(context.date().id, employee.id)
-                || !openCapacityAvailable(context, period)) {
+        if (occupancies.hasActive(context.date().id, employee.id)) {
+            return BookingEligibility.denied("ALREADY_OCCUPIES_DATE");
+        }
+        if (!now.isBefore(targetDateEnd(context.date()))) {
+            return BookingEligibility.denied("TARGET_DATE_ENDED");
+        }
+        if (!openCapacityAvailable(context, period)) {
             return BookingEligibility.denied("CAPACITY_UNAVAILABLE");
+        }
+        if (occupancies.hasRelinquishedLaterBooking(context.date().id, employee.id)) {
+            return BookingEligibility.denied("LATER_BOOKING_RELINQUISHED");
         }
         var original = assignments.findForEmployeeDate(context.date().id, employee.id).orElse(null);
         if (original == null) {
-            return new BookingEligibility(true, openPrice(context.date(), period),
-                    PostAllocationBookingType.OPEN_BOOKING, null, null);
+            int price = openPrice(context.date(), period);
+            return affordableBooking(context.round(), employee, price, PostAllocationBookingType.OPEN_BOOKING,
+                    null, now);
         }
         if (!original.assigned) {
             return BookingEligibility.denied("ORIGINAL_UNSUCCESSFUL_BID");
@@ -303,8 +344,17 @@ public class PostAllocationService {
                 || original.attendancePeriod != period) {
             return BookingEligibility.denied("ORIGINAL_PERIOD_ONLY");
         }
-        return new BookingEligibility(true, original.bid.tokens, PostAllocationBookingType.ORIGINAL_REBOOKING,
-                original, null);
+        return affordableBooking(context.round(), employee, original.bid.tokens,
+                PostAllocationBookingType.ORIGINAL_REBOOKING, original, now);
+    }
+
+    private BookingEligibility affordableBooking(BiddingRoundEntity round, EmployeeEntity employee, int price,
+            PostAllocationBookingType type, SeatAssignmentEntity original, Instant now) {
+        if (fundsAvailable(round, employee.id, now) < price) {
+            return new BookingEligibility(false, price, type, original,
+                    "INSUFFICIENT_POST_ALLOCATION_FUNDS");
+        }
+        return new BookingEligibility(true, price, type, original, null);
     }
 
     private LockedContext lockContext(long roundId, LocalDate targetDate) {
@@ -352,6 +402,8 @@ public class PostAllocationService {
                 .filter(value -> !existingBidIds.contains(value.bid.id))
                 .filter(value -> !value.bid.participation.employee.id.equals(releaserId))
                 .filter(value -> !occupancies.hasActive(context.date().id, value.bid.participation.employee.id))
+                .filter(value -> !occupancies.hasRelinquishedLaterBooking(context.date().id,
+                        value.bid.participation.employee.id))
                 .filter(value -> !candidates.hasAnyPending(value.bid.participation.employee.id, context.date().id))
                 .filter(value -> hasCapacity(context, value.attendancePeriod)).toList();
         if (eligible.isEmpty()) {
@@ -447,34 +499,41 @@ public class PostAllocationService {
         var usableCredits = credits.findSpendableForUpdate(employee.id, publishedRound.id, now);
         int creditAvailable = usableCredits.stream().mapToInt(value -> value.remainingTokens).sum();
         int creditSpend = Math.min(price, creditAvailable);
-        int ordinarySpend = price - creditSpend;
-        if (ordinarySpend == 0) {
+        int carryInSpend = price - creditSpend;
+        if (carryInSpend == 0) {
             return new Funding(usableCredits, creditSpend, 0, null);
         }
         var openRound = rounds.findOpen().orElseThrow(() -> conflict("OPEN_ROUND_NOT_FOUND",
-                "No open-round ordinary balance is available."));
+                "No open-round carry-over balance is available."));
         var participation = participations.findForUpdate(openRound.id, employee.id, configuration.lockTimeout())
                 .orElseThrow(() -> conflict("PARTICIPATION_NOT_FOUND", "No open-round token balance was found."));
         int committed = bids.findForParticipation(participation.id).stream().mapToInt(value -> value.tokens).sum();
-        int ordinaryAvailable = participation.startingBalance - participation.postAllocationSpendTokens - committed;
-        if (ordinarySpend > ordinaryAvailable) {
+        int carryInAvailable = PostAllocationFunds.availableForLateBookings(participation.grantTokens,
+                participation.uncappedCarriedInTokens, participation.postAllocationSpendTokens, committed);
+        if (carryInSpend > carryInAvailable) {
             throw conflict("INSUFFICIENT_POST_ALLOCATION_FUNDS", "The booking price is no longer affordable.");
         }
-        return new Funding(usableCredits, creditSpend, ordinarySpend, participation);
+        return new Funding(usableCredits, creditSpend, carryInSpend, participation);
     }
 
     private int fundsAvailable(BiddingRoundEntity publishedRound, long employeeId, Instant now) {
+        return lateBookingFunds(publishedRound, employeeId, now).availableTokens();
+    }
+
+    public LateBookingFunds lateBookingFunds(BiddingRoundEntity publishedRound, long employeeId, Instant now) {
         int credit = credits.available(employeeId, publishedRound.id, now);
         var openRound = rounds.findOpen().orElse(null);
         if (openRound == null) {
-            return credit;
+            return new LateBookingFunds(credit, credit, 0);
         }
         var participation = participations.findForEmployee(openRound.id, employeeId).orElse(null);
         if (participation == null) {
-            return credit;
+            return new LateBookingFunds(credit, credit, 0);
         }
         int committed = bids.findForParticipation(participation.id).stream().mapToInt(value -> value.tokens).sum();
-        return credit + participation.startingBalance - participation.postAllocationSpendTokens - committed;
+        int carryIn = PostAllocationFunds.availableForLateBookings(participation.grantTokens,
+                participation.uncappedCarriedInTokens, participation.postAllocationSpendTokens, committed);
+        return new LateBookingFunds(Math.addExact(credit, carryIn), credit, carryIn);
     }
 
     private PostAllocationBookingEntity createBooking(SeatOccupancyEntity occupancy, PostAllocationBookingType type,
@@ -485,8 +544,8 @@ public class PostAllocationService {
         booking.offerCandidate = candidate;
         booking.requiredTokens = price;
         booking.creditTokensSpent = funding.creditSpend();
-        booking.ordinaryTokensSpent = funding.ordinarySpend();
-        booking.ordinaryParticipation = funding.ordinarySpend() == 0 ? null : funding.participation();
+        booking.carryInTokensSpent = funding.carryInSpend();
+        booking.carryInParticipation = funding.carryInSpend() == 0 ? null : funding.participation();
         bookings.persist(booking);
         bookings.flush();
         return booking;
@@ -513,12 +572,56 @@ public class PostAllocationService {
                     "booking:" + booking.id + ":credit:" + credit.id, now, null, booking, credit);
             remaining -= spend;
         }
-        if (funding.ordinarySpend() > 0) {
-            funding.participation().postAllocationSpendTokens += funding.ordinarySpend();
+        if (funding.carryInSpend() > 0) {
+            funding.participation().postAllocationSpendTokens += funding.carryInSpend();
             addLedger(employee, funding.participation().round, LedgerType.POST_ALLOCATION_SPEND,
-                    -funding.ordinarySpend(), "booking:" + booking.id + ":ordinary", now,
+                    -funding.carryInSpend(), "booking:" + booking.id + ":carry-in", now,
                     funding.participation(), booking, null);
         }
+    }
+
+    private void requireRefundable(PostAllocationBookingEntity booking, Instant now) {
+        if (booking.refundedAt != null) {
+            throw conflict("BOOKING_ALREADY_REFUNDED", "The later booking has already been refunded.");
+        }
+        if (booking.carryInTokensSpent > 0 && !refundableParticipationOpen(booking, now)) {
+            throw conflict("REFUND_WINDOW_ENDED",
+                    "The carry-over funding round has closed, so this booking can no longer be relinquished.");
+        }
+    }
+
+    private static boolean refundableParticipationOpen(PostAllocationBookingEntity booking, Instant now) {
+        return booking.carryInParticipation != null
+                && booking.carryInParticipation.round.status == RoundStatus.OPEN
+                && now.isBefore(booking.carryInParticipation.round.cutoffAt);
+    }
+
+    private void refundBooking(PostAllocationBookingEntity booking, EmployeeEntity employee, Instant now) {
+        for (var link : bookingCredits.findForBooking(booking.id)) {
+            var credit = credits.findByIdForUpdate(link.credit.id).orElseThrow(() ->
+                    new IllegalStateException("Booking credit funding record is missing"));
+            credit.remainingTokens += link.tokens;
+            if (credit.remainingTokens > credit.initialTokens || credit.expiredAt != null) {
+                throw new IllegalStateException("Booking credit refund would violate credit accounting");
+            }
+            credit.fullyConsumedAt = null;
+            addLedger(employee, credit.round, LedgerType.CREDIT_REFUND, link.tokens,
+                    "booking:" + booking.id + ":credit:" + credit.id + ":refund", now,
+                    null, booking, credit);
+        }
+        if (booking.carryInTokensSpent > 0) {
+            var participation = participations.findByIdForUpdate(booking.carryInParticipation.id,
+                    configuration.lockTimeout()).orElseThrow(() ->
+                    new IllegalStateException("Booking carry-over participation is missing"));
+            if (participation.postAllocationSpendTokens < booking.carryInTokensSpent) {
+                throw new IllegalStateException("Booking refund exceeds recorded post-allocation spending");
+            }
+            participation.postAllocationSpendTokens -= booking.carryInTokensSpent;
+            addLedger(employee, participation.round, LedgerType.POST_ALLOCATION_REFUND,
+                    booking.carryInTokensSpent, "booking:" + booking.id + ":carry-in:refund", now,
+                    participation, booking, null);
+        }
+        booking.refundedAt = now;
     }
 
     private SeatOccupancyEntity createOccupancy(LockedContext context, EmployeeEntity employee,
@@ -690,8 +793,22 @@ public class PostAllocationService {
             RoundDateCapacityStateEntity state) {
     }
 
-    private record Funding(List<RelinquishmentCreditEntity> credits, int creditSpend, int ordinarySpend,
+    private record Funding(List<RelinquishmentCreditEntity> credits, int creditSpend, int carryInSpend,
             RoundParticipationEntity participation) {
+    }
+
+    public record RelinquishmentEligibility(boolean allowed, String reason) {
+
+        static RelinquishmentEligibility available() {
+            return new RelinquishmentEligibility(true, null);
+        }
+
+        static RelinquishmentEligibility unavailable(String reason) {
+            return new RelinquishmentEligibility(false, reason);
+        }
+    }
+
+    public record LateBookingFunds(int availableTokens, int relinquishmentCreditTokens, int carryInTokens) {
     }
 
     public record BookingEligibility(boolean allowed, int price, PostAllocationBookingType type,

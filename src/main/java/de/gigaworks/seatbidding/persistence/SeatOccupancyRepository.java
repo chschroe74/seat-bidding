@@ -31,6 +31,12 @@ public class SeatOccupancyRepository implements PanacheRepositoryBase<SeatOccupa
                 roundDateId, employeeId, OccupancyStatus.ACTIVE) > 0;
     }
 
+    public boolean hasRelinquishedLaterBooking(long roundDateId, long employeeId) {
+        return count("roundDate.id = ?1 and employee.id = ?2 and status = ?3 and sourceType <> ?4",
+                roundDateId, employeeId, OccupancyStatus.RELINQUISHED,
+                OccupancySourceType.ORIGINAL_ASSIGNMENT) > 0;
+    }
+
     public Optional<SeatOccupancyEntity> findOriginal(long assignmentId) {
         return find("originalSeatAssignment.id = ?1 and sourceType = ?2", assignmentId,
                 OccupancySourceType.ORIGINAL_ASSIGNMENT).firstResultOptional();

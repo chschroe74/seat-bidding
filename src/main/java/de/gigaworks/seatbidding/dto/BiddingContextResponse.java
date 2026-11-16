@@ -23,6 +23,7 @@ public record BiddingContextResponse(
         Long floorPlanVersionId,
         int startingBalance,
         int postAllocationSpend,
+        int lateBookingSpend,
         int bidTotal,
         int availableToBid,
         List<DayBid> days) {

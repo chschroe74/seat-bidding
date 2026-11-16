@@ -22,6 +22,24 @@ public final class BalanceCalculator {
         requireNonNegative("carriedIn", carriedIn);
         return Math.addExact(grant, carriedIn);
     }
+
+    public static ClosingBalance closeAfterLateBookings(int grantTokens, int carriedInTokens,
+            int uncappedCarriedInTokens, int postAllocationSpend, int successfulBidTokens, int carryOverCap) {
+        requireNonNegative("grantTokens", grantTokens);
+        requireNonNegative("carriedInTokens", carriedInTokens);
+        requireNonNegative("uncappedCarriedInTokens", uncappedCarriedInTokens);
+        requireNonNegative("postAllocationSpend", postAllocationSpend);
+        if (carriedInTokens > uncappedCarriedInTokens || postAllocationSpend > uncappedCarriedInTokens) {
+            throw new IllegalArgumentException("carry-in accounting is inconsistent");
+        }
+        int effectiveCarryIn = Math.min(carriedInTokens, uncappedCarriedInTokens - postAllocationSpend);
+        int effectiveStartingBalance = Math.addExact(grantTokens, effectiveCarryIn);
+        var regular = close(effectiveStartingBalance, successfulBidTokens, carryOverCap);
+        int ledgerRemaining = Math.addExact(grantTokens, uncappedCarriedInTokens)
+                - postAllocationSpend - successfulBidTokens;
+        return new ClosingBalance(regular.remaining(), regular.carriedOut(),
+                ledgerRemaining - regular.carriedOut());
+    }
     
     private static void requireNonNegative(String name, int value) {
         if (value < 0) {
@@ -37,4 +55,3 @@ public final class BalanceCalculator {
     }
     
 }
-

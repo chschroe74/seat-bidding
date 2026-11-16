@@ -1,0 +1,75 @@
+databaseChangeLog:
+  - changeSet:
+      id: 010-uncapped-late-booking-carry
+      author: codex
+      changes:
+        - sql:
+            comment: Preserve uncapped leftovers for late bookings while retaining capped regular carry-in.
+            splitStatements: false
+            sql: |
+              ALTER TABLE round_participation ADD COLUMN uncapped_carried_in_tokens integer;
+              UPDATE round_participation rp
+              SET uncapped_carried_in_tokens = GREATEST(
+                rp.carried_in_tokens,
+                rp.post_allocation_spend_tokens,
+                COALESCE((
+                  SELECT predecessor_participation.remaining_balance
+                  FROM bidding_round current_round
+                  JOIN round_participation predecessor_participation
+                    ON predecessor_participation.round_id = current_round.predecessor_round_id
+                   AND predecessor_participation.employee_id = rp.employee_id
+                  WHERE current_round.id = rp.round_id
+                ), 0));
+              ALTER TABLE round_participation ALTER COLUMN uncapped_carried_in_tokens SET NOT NULL;
+              ALTER TABLE round_participation ADD CONSTRAINT ck_participation_uncapped_carry_in CHECK (
+                uncapped_carried_in_tokens >= carried_in_tokens);
+              ALTER TABLE round_participation DROP CONSTRAINT ck_participation_spend;
+              ALTER TABLE round_participation DROP CONSTRAINT ck_participation_remaining;
+              ALTER TABLE round_participation ADD CONSTRAINT ck_participation_spend CHECK (
+                successful_bid_tokens >= 0 AND post_allocation_spend_tokens >= 0
+                AND post_allocation_spend_tokens <= uncapped_carried_in_tokens
+                AND successful_bid_tokens <= grant_tokens
+                  + LEAST(carried_in_tokens, uncapped_carried_in_tokens - post_allocation_spend_tokens));
+              UPDATE round_participation
+              SET remaining_balance = grant_tokens
+                    + LEAST(carried_in_tokens, uncapped_carried_in_tokens - post_allocation_spend_tokens)
+                    - successful_bid_tokens
+              WHERE remaining_balance IS NOT NULL;
+              UPDATE round_participation rp
+              SET carried_out_tokens = LEAST(br.carry_over_cap, rp.remaining_balance)
+              FROM bidding_round br
+              WHERE br.id = rp.round_id AND rp.carried_out_tokens IS NOT NULL;
+              ALTER TABLE round_participation ADD CONSTRAINT ck_participation_remaining CHECK (
+                remaining_balance IS NULL OR remaining_balance = grant_tokens
+                  + LEAST(carried_in_tokens, uncapped_carried_in_tokens - post_allocation_spend_tokens)
+                  - successful_bid_tokens);
+              ALTER TABLE token_ledger DROP CONSTRAINT ck_ledger_type;
+              ALTER TABLE token_ledger ADD CONSTRAINT ck_ledger_type CHECK (type IN ('GRANT','CARRY_IN','LATE_BOOKING_CARRY_IN','BID_SPEND','POST_ALLOCATION_SPEND','POST_ALLOCATION_REFUND','RELINQUISHMENT_CREDIT','CREDIT_SPEND','CREDIT_REFUND','CREDIT_EXPIRY','EXPIRY'));
+              INSERT INTO token_ledger (employee_id, round_id, participation_id, type, amount, idempotency_key,
+                occurred_at)
+              SELECT employee_id, round_id, id, 'LATE_BOOKING_CARRY_IN',
+                uncapped_carried_in_tokens - carried_in_tokens,
+                'round:' || round_id || ':employee:' || employee_id || ':late-booking-carry-in:migration',
+                created_at
+              FROM round_participation
+              WHERE uncapped_carried_in_tokens > carried_in_tokens;
+      rollback:
+        - sql:
+            splitStatements: false
+            sql: |
+              DELETE FROM token_ledger WHERE type = 'LATE_BOOKING_CARRY_IN';
+              ALTER TABLE token_ledger DROP CONSTRAINT ck_ledger_type;
+              ALTER TABLE token_ledger ADD CONSTRAINT ck_ledger_type CHECK (type IN ('GRANT','CARRY_IN','BID_SPEND','POST_ALLOCATION_SPEND','POST_ALLOCATION_REFUND','RELINQUISHMENT_CREDIT','CREDIT_SPEND','CREDIT_REFUND','CREDIT_EXPIRY','EXPIRY'));
+              ALTER TABLE round_participation DROP CONSTRAINT ck_participation_remaining;
+              ALTER TABLE round_participation DROP CONSTRAINT ck_participation_spend;
+              ALTER TABLE round_participation DROP CONSTRAINT ck_participation_uncapped_carry_in;
+              UPDATE round_participation
+              SET remaining_balance = starting_balance - successful_bid_tokens - post_allocation_spend_tokens
+              WHERE remaining_balance IS NOT NULL;
+              ALTER TABLE round_participation DROP COLUMN uncapped_carried_in_tokens;
+              ALTER TABLE round_participation ADD CONSTRAINT ck_participation_spend CHECK (
+                successful_bid_tokens >= 0 AND post_allocation_spend_tokens >= 0
+                AND successful_bid_tokens + post_allocation_spend_tokens <= starting_balance);
+              ALTER TABLE round_participation ADD CONSTRAINT ck_participation_remaining CHECK (
+                remaining_balance IS NULL OR remaining_balance = starting_balance
+                  - successful_bid_tokens - post_allocation_spend_tokens);

@@ -5,6 +5,7 @@ import de.gigaworks.seatbidding.bootstrap.ParticipationReconciliationService;
 import de.gigaworks.seatbidding.dto.BiddingContextResponse;
 import de.gigaworks.seatbidding.dto.ReplaceBidsRequest;
 import de.gigaworks.seatbidding.exception.ApplicationProblem;
+import de.gigaworks.seatbidding.occupancy.PostAllocationFunds;
 import de.gigaworks.seatbidding.persistence.BidEntity;
 import de.gigaworks.seatbidding.persistence.BidRepository;
 import de.gigaworks.seatbidding.persistence.BiddingRoundRepository;
@@ -85,9 +86,12 @@ public class BiddingService {
         var byDate = roundDates.stream().collect(Collectors.toMap(d -> d.targetDate, Function.identity()));
         Map<java.time.LocalDate, Integer> normalized;
         try {
+            int effectiveStartingBalance = PostAllocationFunds.effectiveStartingBalance(
+                    participation.grantTokens, participation.carriedInTokens,
+                    participation.uncappedCarriedInTokens, participation.postAllocationSpendTokens);
             normalized = BidSetValidator.validateAndNormalize(
                     request.bids().stream().map(b -> new BidSetValidator.SubmittedBid(b.date(), b.tokens())).toList(),
-                    byDate.keySet(), participation.startingBalance - participation.postAllocationSpendTokens);
+                    byDate.keySet(), effectiveStartingBalance);
         }
         catch (BidValidationException invalid) {
             throw ApplicationProblem.badRequest(invalid.code(), "Invalid bid set", invalid.getMessage());
@@ -129,12 +133,15 @@ public class BiddingService {
                     participation.round.seatCapacity - reservedSeatCount,
                     reservation == null ? null : reservation.description);
         }).toList();
+        int regularBalanceReduction = PostAllocationFunds.regularBalanceReduction(participation.carriedInTokens,
+                participation.uncappedCarriedInTokens, participation.postAllocationSpendTokens);
+        int effectiveStartingBalance = participation.startingBalance - regularBalanceReduction;
         return new BiddingContextResponse(participation.round.id, participation.round.status,
                 participation.round.cutoffAt, participation.round.scheduleZone, now,
                 participation.round.seatCapacity, participation.round.capacitySource,
                 participation.round.floorPlanVersion == null ? null : participation.round.floorPlanVersion.id,
-                participation.startingBalance, participation.postAllocationSpendTokens, total,
-                participation.startingBalance - participation.postAllocationSpendTokens - total, dayResponses);
+                participation.startingBalance, regularBalanceReduction, participation.postAllocationSpendTokens,
+                total, effectiveStartingBalance - total, dayResponses);
     }
     
 

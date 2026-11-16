@@ -15,3 +15,7 @@ databaseChangeLog:
       file: db/changelog/changes/007-guest-seat-preferences.yaml
   - include:
       file: db/changelog/changes/008-post-allocation-workflow.yaml
+  - include:
+      file: db/changelog/changes/009-refundable-carry-in-post-allocation.yaml
+  - include:
+      file: db/changelog/changes/010-uncapped-late-booking-carry.yaml

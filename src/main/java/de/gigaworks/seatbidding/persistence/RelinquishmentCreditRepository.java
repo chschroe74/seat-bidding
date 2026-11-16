@@ -29,6 +29,10 @@ public class RelinquishmentCreditRepository implements PanacheRepositoryBase<Rel
         return find("seatAssignment.id", assignmentId).firstResultOptional();
     }
 
+    public Optional<RelinquishmentCreditEntity> findByIdForUpdate(long id) {
+        return find("id", id).withLock(LockModeType.PESSIMISTIC_WRITE).firstResultOptional();
+    }
+
     public List<RelinquishmentCreditEntity> findExpiredForUpdate(long employeeId, long roundId, Instant now) {
         return find("employee.id = ?1 and round.id = ?2 and remainingTokens > 0 and expiresAt <= ?3 "
                 + "and expiredAt is null order by id", employeeId, roundId, now)

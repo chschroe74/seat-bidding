@@ -190,15 +190,16 @@ public class RoundProcessingService {
             addSpendLedger(bid, now);
         }
 
-        Map<Long, Integer> carryByEmployee = new HashMap<>();
+        Map<Long, Integer> uncappedCarryByEmployee = new HashMap<>();
         for (RoundParticipationEntity participation : participations.findForRound(round.id)) {
             int spend = spendByParticipation.getOrDefault(participation.id, 0);
-            var closing = BalanceCalculator.close(participation.startingBalance,
-                    spend + participation.postAllocationSpendTokens, round.carryOverCap);
+            var closing = BalanceCalculator.closeAfterLateBookings(participation.grantTokens,
+                    participation.carriedInTokens, participation.uncappedCarriedInTokens,
+                    participation.postAllocationSpendTokens, spend, round.carryOverCap);
             participation.successfulBidTokens = spend;
             participation.remainingBalance = closing.remaining();
             participation.carriedOutTokens = closing.carriedOut();
-            carryByEmployee.put(participation.employee.id, closing.carriedOut());
+            uncappedCarryByEmployee.put(participation.employee.id, closing.remaining());
             if (closing.expired() > 0) {
                 addExpiryLedger(participation, closing.expired(), now);
             }
@@ -207,7 +208,7 @@ public class RoundProcessingService {
         round.status = RoundStatus.COMPLETED;
         round.processedAt = now;
         rounds.flush();
-        roundFactory.create(round.sequenceNo + 1, now, round.cutoffAt, round, carryByEmployee);
+        roundFactory.create(round.sequenceNo + 1, now, round.cutoffAt, round, uncappedCarryByEmployee);
         return true;
     }
 
